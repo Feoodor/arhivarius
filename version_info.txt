@@ -1,0 +1,33 @@
+# UTF-8
+#
+# Информация о версии для Архивариус.exe (вкладка «Подробно» в свойствах файла).
+# Файл читается PyInstaller при сборке (параметр version= в .spec).
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName',      'Фёдор Москальчук'),
+        StringStruct('FileDescription',  'Архивариус — разбор архива. Разработан Фёдором Москальчуком'),
+        StringStruct('FileVersion',      '1.0.0'),
+        StringStruct('InternalName',     'Архивариус'),
+        StringStruct('LegalCopyright',   '© 2026 Фёдор Москальчук'),
+        StringStruct('OriginalFilename', 'Архивариус.exe'),
+        StringStruct('ProductName',      'Архивариус'),
+        StringStruct('ProductVersion',   '1.0.0'),
+        StringStruct('Comments',         'Разработчик: Фёдор Москальчук'),
+        StringStruct('Author',           'Фёдор Москальчук')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

@@ -1,0 +1,21 @@
+# Рабочие данные и артефакты — не для репозитория
+config.json
+prompt.md
+prompt_user.md
+prompt_section.md
+prompt_folder.md
+_архивариус/
+_output/
+*.log
+__pycache__/
+*.pyc
+build/
+build*/
+dist/
+dist*/
+*.egg-info/
+.build_trash/
+Архивариус.exe
+*.exe
+.venv/
+venv/
