@@ -42,8 +42,9 @@ Everything else is a safety net: an operation journal, one-click batch undo, zer
 
 1. Install [Ollama](https://ollama.com) and pull a model:
    `ollama pull gemma3:12b` (optionally `ollama pull bge-m3` for semantic folder search).
-2. Download `Arhivarius-*.exe` from the [latest release](https://github.com/Feoodor/arhivarius/releases)
-   and run it. No Python required.
+2. From the [latest release](https://github.com/Feoodor/arhivarius/releases) grab either **`Arhivarius-*.exe`**
+   (single file) or **`arhivarius-portable-*.zip`** (folder with exe, guide and prompts, handy on a
+   USB stick) and run it. No Python required.
 3. The first run creates `config.json` and editable prompts (`prompt.md` — your naming
    rules and layout policy; plus `prompt_user.md`, `prompt_section.md`, `prompt_folder.md`).
    Set the archive root and confidence thresholds in ⚙️ Settings.

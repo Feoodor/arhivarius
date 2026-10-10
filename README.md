@@ -41,8 +41,9 @@
 
 1. Установите [Ollama](https://ollama.com) и модель:
    `ollama pull gemma3:12b` (для смыслового поиска по желанию — `ollama pull bge-m3`).
-2. Скачайте `Arhivarius-*.exe` из [последнего релиза](https://github.com/Feoodor/arhivarius/releases)
-   и запустите. Python не нужен.
+2. Скачайте из [последнего релиза](https://github.com/Feoodor/arhivarius/releases) один из вариантов
+   и запустите (Python не нужен): **`Arhivarius-*.exe`** — одиночный файл, или
+   **`arhivarius-portable-*.zip`** — папка с exe, инструкцией и промптами (удобно носить на флешке).
 3. Первый запуск создаст `config.json` и редактируемые промпты (`prompt.md` — регламент
    названий и правила раскладки; `prompt_user.md`, `prompt_section.md`, `prompt_folder.md`).
    Настройте корень папок и пороги уверенности в «⚙️ Настройки».
