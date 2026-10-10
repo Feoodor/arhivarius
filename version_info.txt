@@ -18,12 +18,12 @@ VSVersionInfo(
       StringTable('040904B0', [
         StringStruct('CompanyName',      'Theosis'),
         StringStruct('FileDescription',  'Архивариус. Разработан Фёдором Москальчуком'),
-        StringStruct('FileVersion',      '1.0.0'),
+        StringStruct('FileVersion',      '1.0.2'),
         StringStruct('InternalName',     'Архивариус'),
         StringStruct('LegalCopyright',   '© 2026 Фёдор Москальчук'),
         StringStruct('OriginalFilename', 'Архивариус.exe'),
         StringStruct('ProductName',      'Архивариус'),
-        StringStruct('ProductVersion',   '1.0.0'),
+        StringStruct('ProductVersion',   '1.0.2'),
         StringStruct('Comments',         'Разработчик: Фёдор Москальчук'),
         StringStruct('Author',           'Фёдор Москальчук')
       ])
