@@ -1,0 +1,11 @@
+name: Идея / предложение
+about: Как сделать программу лучше
+labels: enhancement
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Идея
+      description: Что должно происходить и почему это полезно
+    validations:
+      required: true

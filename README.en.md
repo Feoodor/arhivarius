@@ -83,4 +83,8 @@ AGPL-3.0 — use, study, modify and share, keeping modifications open.
 
 ---
 
-Developed by Feodor Moskalchuk.
+## Contact
+
+Developed by **Feodor Moskalchuk**. Questions and ideas:
+Telegram **[@Feo_odor](https://t.me/Feo_odor)** · GitHub Issues · Discussions.
+

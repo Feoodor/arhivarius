@@ -1,0 +1,16 @@
+name: Баг-репорт
+about: Что-то работает не так
+labels: bug
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что произошло
+      description: Опишите проблему; приложите строку из «📜 Журнал» или файл operations_log.csv (личные пути можно вырезать)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия программы
+      placeholder: "например, 1.0.1"

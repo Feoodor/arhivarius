@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Telegram — вопросы и идеи
+    url: https://t.me/Feo_odor
+    about: Быстрый способ связаться с разработчиком
+  - name: Discussions — предложения функций
+    url: https://github.com/Feoodor/arhivarius/discussions
+    about: Идеи по доработке, сценарии использования
