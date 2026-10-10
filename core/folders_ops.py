@@ -53,7 +53,8 @@ def iter_dirs(root: Path, prune_lower: set[str], max_depth: int = 10) -> list[st
 
 def is_dir_empty(path: Path) -> bool:
     try:
-        return all(e.name.lower() in JUNK for e in os.scandir(path))
+        with os.scandir(path) as it:
+            return all(e.name.lower() in JUNK for e in it)
     except OSError:
         return False
 
@@ -158,7 +159,8 @@ def plan_merge(config: dict, group: dict) -> list[dict]:
         if not src.is_dir():
             continue
         try:
-            entries = sorted(os.scandir(src), key=lambda e: e.name)
+            with os.scandir(src) as it:
+                entries = sorted(it, key=lambda e: e.name)
         except OSError:
             continue
         for entry in entries:
@@ -184,9 +186,9 @@ def index_paths(config: dict) -> set[str]:
         from . import pipeline
         try:
             _snap, idx = pipeline._snapshot_and_index(config)
-            _IDX_CACHE[key] = set(idx.by_path)
         except Exception:
-            _IDX_CACHE[key] = set()
+            return set()   # сбой не кэшируем: после скана пути снова увидят
+        _IDX_CACHE[key] = set(idx.by_path)
     return _IDX_CACHE[key]
 
 
@@ -215,7 +217,9 @@ def apply_move(config: dict, move: dict, batch: str) -> dict:
     if move.get("режим") == "merge-dir":
         results: list[dict] = []
         dst.mkdir(parents=True, exist_ok=True)
-        for entry in sorted(os.scandir(src), key=lambda e: e.name):
+        with os.scandir(src) as it:
+            children = sorted(it, key=lambda e: e.name)
+        for entry in children:
             sub = {"откуда": f"{move['откуда']}/{entry.name}",
                    "куда": f"{move['куда']}/{entry.name}",
                    "режим": "merge-dir" if entry.is_dir(follow_symlinks=False) else "move"}
@@ -244,6 +248,9 @@ def move_folder(config: dict, src_rel: str, dst_parent_rel: str, batch: str) -> 
     target = f"{dst_parent_rel.strip('/')}/{name}".strip("/")
     if not src.is_dir():
         return {"ok": False, "msg": "нет такой папки"}
+    src_clean = src_rel.strip("/")
+    if target == src_clean or target.startswith(src_clean + "/"):
+        return {"ok": False, "msg": "нельзя перенести папку внутрь самой себя"}
     mode = "merge-dir" if (root / PurePosixPath(target)).is_dir() else "move"
     return apply_move(config, {"откуда": src_rel, "куда": target, "режим": mode}, batch)
 
@@ -322,7 +329,7 @@ def save_keep(config: dict, items: list[str]) -> None:
 class _SHFILEOPSTRUCTW(ctypes.Structure):
     _fields_ = [("hwnd", ctypes.wintypes.HWND), ("wFunc", ctypes.c_uint),
                 ("pFrom", ctypes.c_wchar_p), ("pTo", ctypes.c_wchar_p),
-                ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", ctypes.c_int),
+                ("fFlags", ctypes.c_uint32), ("fAnyOperationsAborted", ctypes.c_int),
                 ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", ctypes.c_wchar_p)]
 
 
@@ -336,7 +343,9 @@ def recycle_folder(config: dict, rel: str) -> tuple[bool, str]:
     op = _SHFILEOPSTRUCTW()
     op.wFunc = 3  # FO_DELETE
     op.pFrom = os.fsdecode(abs_path) + "\0\0"
-    op.fFlags = 0x0040 | 0x0004 | 0x0010  # ALLOWUNDO | NOCONFIRMATION | SILENT
+    op.fFlags = 0x0040 | 0x0004 | 0x0010 | 0x0400  # ALLOWUNDO | SILENT | NOCONFIRMATION | NOERRORUI
+    if not is_dir_empty(abs_path):   # второй взгляд прямо перед удалением: DriveFS мог разбудить файлы
+        return False, "папка перестала быть пустой — пропускаем"
     try:
         res = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
         ok = res == 0 and not op.fAnyOperationsAborted

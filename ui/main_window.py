@@ -174,6 +174,7 @@ class OrganizerApp(tk.Tk):
         """Векторный индикатор состояния Ollama: перерисовка гладким кружком."""
         try:
             self.dot.delete("all")
+            T._prune_items(self.dot)
             T.smooth_circle(self.dot, 8, 8, 6, color)
         except tk.TclError:
             pass
@@ -891,7 +892,7 @@ class OrganizerApp(tk.Tk):
                           self.svars["roots"],
                           "один и тот же Google Drive на разных компьютерах монтируется под разными "
                           "буквами — допишите сюда путь отдела с каждого компьютера (например "
-                          "D:\\Общие диски\\Молодежный отдел)")
+                          "D:\\Archive\\Department)")
         tk.Checkbutton(block, text="автовыбор первого существующего корня из списка (для разных ПК)",
                        bg=T.CARD, fg=T.INK, activebackground=T.CARD, selectcolor=T.CARD_SOFT,
                        anchor="w", font=("Segoe UI", 10),
@@ -905,8 +906,13 @@ class OrganizerApp(tk.Tk):
                           note="по умолчанию http://127.0.0.1:11434. Нет видеокарты здесь — "
                                "впишите http://адрес-компьютера-с-картой:11434, и модель будет "
                                "думать на нём (там должен быть запущен Ollama с OLLAMA_HOST=0.0.0.0)")
-        self._combo_field(block, "Текстовая модель", self.svars["model"], self._model_names())
-        self._combo_field(block, "Модель для зрения", self.svars["vision_model"], self._model_names())
+        self._model_combos = [
+            (self._combo_field(block, "Текстовая модель", self.svars["model"], self._model_options()),
+             self.svars["model"]),
+            (self._combo_field(block, "Модель для зрения", self.svars["vision_model"], self._model_options()),
+             self.svars["vision_model"]),
+        ]
+        self.fetch_model_names_async()
         self._spin_field(block, "num_ctx", self.svars["num_ctx"], 4096, 65536, 4096,
                          "8192 бережёт видеопамять; 16384 — карта без длинной инструкции; "
                          "32768 — полная инструкция + полная карта + текст файла")
@@ -1011,18 +1017,20 @@ class OrganizerApp(tk.Tk):
             tk.Label(row, text="  " + note, bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9),
                      wraplength=560, justify="left").pack(side="left", padx=8)
 
-    def _combo_field(self, parent, label: str, variable, values, readonly: bool = False, note: str = "") -> None:
+    def _combo_field(self, parent, label: str, variable, values, readonly: bool = False, note: str = "") -> ttk.Combobox:
         from ui import i18n as _I
         label = _I.tr(label)
         row = tk.Frame(parent, bg=T.CARD)
         row.pack(fill="x", pady=3)
         tk.Label(row, text=label, bg=T.CARD, fg=T.MUTED, width=26, anchor="w",
                  font=("Segoe UI", 10)).pack(side="left")
-        ttk.Combobox(row, textvariable=variable, values=list(values), width=28,
-                     state="readonly" if readonly else "normal").pack(side="left")
+        combo = ttk.Combobox(row, textvariable=variable, values=list(values), width=28,
+                             state="readonly" if readonly else "normal")
+        combo.pack(side="left")
         if note:
             tk.Label(row, text="  " + note, bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9),
                      wraplength=560, justify="left").pack(side="left", padx=8)
+        return combo
 
     # ------------------------------------------------------------------ журнал
     def _build_log(self, parent) -> None:
@@ -1048,6 +1056,23 @@ class OrganizerApp(tk.Tk):
         client = OllamaClient(base_url=self.config["llm"]["base_url"], model=self.config["llm"]["model_text"])
         names = client.list_models() if client.is_alive() else []
         return tuple(sorted(set(names) | {self.config["llm"]["model_text"], self.config["llm"]["model_vision"]}))
+
+    def _model_options(self) -> tuple[str, ...]:
+        """Список для выпадашек БЕЗ сетевого запроса: настройки + прошлый кэш."""
+        cached = getattr(self, "_model_names_cached", ())
+        return tuple(sorted(set(cached) | {self.config["llm"]["model_text"],
+                                           self.config["llm"]["model_vision"]}))
+
+    def fetch_model_names_async(self) -> None:
+        """Список моделей Ollama приезжает фоном — окно не виснет при незапущенной Ollama."""
+        def work() -> None:
+            try:
+                names = self._model_names()
+            except Exception:
+                names = ()
+            self.events.put(("models", names))
+
+        threading.Thread(target=work, daemon=True, name="models").start()
 
     def _open_name(self, name: str) -> None:
         path = self.config["output_path"] / name
@@ -1076,46 +1101,68 @@ class OrganizerApp(tk.Tk):
     def _drain(self) -> None:
         try:
             while True:
-                event = self.events.get_nowait()
-                kind = event[0]
-                if kind == "log":
-                    self.append_log(event[1])
-                elif kind == "progress":
-                    self.progress.stop()
-                    self.progress.configure(mode="determinate", maximum=max(1, event[2]), value=event[1])
-                    self.status_var.set(f"{event[3] if len(event) > 3 else 'Ход'}: {event[1]}/{event[2]}")
-                elif kind == "record":
-                    row = event[1]
-                    self.append_log(f"{row.get('Статус')} · {row.get('Текущий путь')} → "
-                                    f"{row.get('Целевой путь') or '—'}/{row.get('Новое имя')}")
-                elif kind == "ollama":
-                    alive, models = event[1], event[2]
-                    model = self.config["llm"]["model_text"]
-                    ready = alive and model in models
-                    self.set_dot(T.GOOD if ready else (T.WARN if alive else T.BAD))
-                    self.ollama_label.configure(text=(f"Ollama · {model} готова" if ready else
-                                                      (f"Ollama · нет модели {model}" if alive else "Ollama · не отвечает")))
-                elif kind == "snapshot":
-                    self._apply_snapshot(event[1], event[2], event[3])
-                elif kind == "done":
-                    self.progress.stop()
-                    self.progress.configure(mode="determinate", maximum=100, value=100)
-                    result = event[2]
-                    text = (", ".join(f"{k}: {v}" for k, v in result.items())
-                            if isinstance(result, dict) else (str(result) if result else ""))
-                    self.status_var.set(f"Готово — {text}" if text else "Готово")
-                    self.append_log(f"Готово — {text}" if text else "Готово", "ok")
-                    self.refresh_all()
-                    if event[1] == "Перенос":
-                        self.after(400, self._check_intake_empty)
-                elif kind == "error":
-                    self.progress.stop()
-                    self.status_var.set("Ошибка")
-                    self.append_log(event[3], "error")
-                    messagebox.showerror("Ошибка", f"{type(event[2]).__name__}: {event[2]}")
-        except queue.Empty:
-            pass
-        self.after(90, self._drain)
+                try:
+                    event = self.events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._handle_event(event)
+                except Exception:  # одно сбойное событие не должно убивать насос UI
+                    try:
+                        self.append_log(traceback.format_exc(), "error")
+                    except Exception:
+                        pass
+        finally:
+            try:
+                self.after(90, self._drain)
+            except tk.TclError:
+                pass   # окно закрывается — насос больше не нужен
+
+    def _handle_event(self, event: tuple) -> None:
+        kind = event[0]
+        if kind == "log":
+            self.append_log(event[1])
+        elif kind == "progress":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=max(1, event[2]), value=event[1])
+            self.status_var.set(f"{event[3] if len(event) > 3 else 'Ход'}: {event[1]}/{event[2]}")
+        elif kind == "record":
+            row = event[1]
+            self.append_log(f"{row.get('Статус')} · {row.get('Текущий путь')} → "
+                            f"{row.get('Целевой путь') or '—'}/{row.get('Новое имя')}")
+        elif kind == "ollama":
+            alive, models = event[1], event[2]
+            model = self.config["llm"]["model_text"]
+            ready = alive and model in models
+            self.set_dot(T.GOOD if ready else (T.WARN if alive else T.BAD))
+            self.ollama_label.configure(text=(f"Ollama · {model} готова" if ready else
+                                              (f"Ollama · нет модели {model}" if alive else "Ollama · не отвечает")))
+        elif kind == "models":
+            self._model_names_cached = tuple(event[1])
+            if self._model_names_cached:
+                for combo, var in getattr(self, "_model_combos", []):
+                    try:
+                        combo.configure(values=sorted(set(self._model_names_cached) | {var.get()}))
+                    except tk.TclError:
+                        pass   # страница настроек уже закрыта
+        elif kind == "snapshot":
+            self._apply_snapshot(event[1], event[2], event[3])
+        elif kind == "done":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=100, value=100)
+            result = event[2]
+            text = (", ".join(f"{k}: {v}" for k, v in result.items())
+                    if isinstance(result, dict) else (str(result) if result else ""))
+            self.status_var.set(f"Готово — {text}" if text else "Готово")
+            self.append_log(f"Готово — {text}" if text else "Готово", "ok")
+            self.refresh_all()
+            if event[1] == "Перенос":
+                self.after(400, self._check_intake_empty)
+        elif kind == "error":
+            self.progress.stop()
+            self.status_var.set("Ошибка")
+            self.append_log(event[3], "error")
+            messagebox.showerror("Ошибка", f"{type(event[2]).__name__}: {event[2]}")
 
     def log_event(self, text: str) -> None:
         self.events.put(("log", text))
@@ -1227,6 +1274,9 @@ class OrganizerApp(tk.Tk):
         self.run_worker("Похожие фото", work)
 
     def start_analyze(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning("Занято", "Разбор уже идёт — дождитесь или нажмите «Стоп».")
+            return
         if not self.snapshot or not self.index:
             messagebox.showwarning("Нет снимка", "Сначала обновите снимок диска.")
             return
@@ -2373,7 +2423,19 @@ class OrganizerApp(tk.Tk):
 
     def _close(self) -> None:
         if self.worker and self.worker.is_alive():
-            if not messagebox.askyesno("Работа идёт", "Остановить после текущего файла и закрыть окно?"):
+            if not messagebox.askyesno(
+                    "Работа идёт",
+                    "Остановить после текущего файла и закрыть, ДОЖДАВШИСЬ её конца?\n"
+                    "Закрывать посреди перемещения файлов опасно — не закрывайте окно кнопкой «Нет»."):
                 return
             self.stop_work()
+            self.status_var.set("закрою после завершения текущей операции…")
+            self._close_when_worker_done()
+            return
         self.destroy()
+
+    def _close_when_worker_done(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self.after(400, self._close_when_worker_done)
+        else:
+            self.destroy()

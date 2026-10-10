@@ -194,7 +194,7 @@ def normalize_target(target: str, config: dict, index: FolderIndex, verdict: Ver
     if norm(top) not in known:
         replacement = _match_root(top, allowed)
         if replacement:
-            parts[parts.index(top)] = replacement
+            parts[head] = replacement
             path = "/".join(parts)
             verdict.fix(f"корневой раздел «{top}» приведён к «{replacement}»")
         else:
@@ -211,7 +211,7 @@ def _match_root_scored(candidate: str, allowed: list[str]) -> tuple[str, int]:
         score = 0
         if cand == have:
             score = 100
-        elif cand and (cand in have or have in cand):
+        elif cand and (cand in have or (len(have) >= 6 and have in cand)):
             score = 60 + min(len(cand), len(have))
         else:
             overlap = len(cand_tokens & set(tokens(root)))
@@ -316,7 +316,10 @@ def resolve_path(target: str, index: FolderIndex, verdict: Verdict) -> str:
     и обрезанные/неточные имена сегментов (единственное совпадение по префиксу)."""
     if not target or target in index.by_path:
         return target
-    folded = {fold(path): path for path in index.by_path if path}
+    folded = getattr(index, "_folded_paths", None)
+    if folded is None:
+        folded = {fold(path): path for path in index.by_path if path}
+        index._folded_paths = folded
     hit = folded.get(fold(target))
     if hit:
         verdict.fix(f"папка найдена с учётом написания (ё/е, регистр): «{hit}»")
@@ -509,8 +512,9 @@ def build_record(
     head_date = re.match(r"^(?:19|20)\d{2}(?:-\d{2}){0,2}", new_name)
     if doc_date and head_date and head_date.group(0) != doc_date:
         verdict.flag(f"в имени дата {head_date.group(0)}, а doc_date {doc_date} — что из них из текста?")
-    marked = "Вх-" in new_name or new_name.startswith("Вх_")
-    marked_out = "Исх-" in new_name or new_name.startswith("Исх_")
+    folded_name = new_name.casefold()
+    marked = "вх-" in folded_name or folded_name.startswith("вх_")
+    marked_out = "исх-" in folded_name or folded_name.startswith("исх_")
     if marked and direction != "вх":
         verdict.fix("в имени блок «Вх» — направление исправлено на входящий")
         direction = "вх"
@@ -519,8 +523,11 @@ def build_record(
         direction = "исх"
     elif direction in {"вх", "исх"} and not (marked or marked_out):
         verdict.flag(f"направление «{direction}», но в имени нет блока Вх-/Исх- (номер письма не найден?)")
-    if event_start and event_end and event_end < event_start:
-        verdict.flag(f"дата события путается: начало {event_start} позже конца {event_end}")
+    if event_start and event_end:
+        # сравниваем только общую часть: «2026-05» vs «2026-05-20» — это не «конец раньше начала»
+        _n = min(len(event_start), len(event_end))
+        if event_end[:_n] < event_start[:_n]:
+            verdict.flag(f"дата события путается: начало {event_start} позже конца {event_end}")
     if event_start and event_end and event_start != event_end and re.match(r"^\d{4}-\d{2}-\d{2}", new_name):
         if new_name[:10] != event_start and doc_date != new_name[:10]:
             verdict.flag("многодневное событие, а имя и папка по не первой дате — сверьте пункт «МНОГОДНЕВНЫЕ»")
@@ -614,11 +621,15 @@ def build_record(
         target = ""
     if operation == "без изменений":
         verdict.fix("место и имя совпадают с текущими — перенос не нужен")
-    if INTAKE_RE.search(target or "") and (not target or target == current_parent):
+    staying = target or current_parent
+    if not discard and INTAKE_RE.search(staying) and (not target or target == current_parent):
         verdict.flag("файл остаётся в зоне разбора — каноническое место не определено")
 
     shortcut = "" if discard else normalize_shortcut(
         str(answer.get("shortcut_to", "")), config, index, verdict, direction, target, years)
+
+    if path_conflicts(target, new_name, root) and operation != "без изменений":
+        verdict.flag("такое имя уже существует — при переносе получит _v2")
 
     record = {
         "Текущий путь": old_path,
@@ -654,8 +665,6 @@ def build_record(
         "_причина-выброса": str(answer.get("discard_reason") or "")[:300],
         "_несколько_документов": str(extracted.meta.get("несколько документов", "")),
     }
-    if path_conflicts(target, new_name, root) and operation != "без изменений":
-        verdict.flag("такое имя уже существует — при переносе получит _v2")
     verdict.record = record
     record["Статус"] = "проверка" if verdict.review else "готово"
     return verdict

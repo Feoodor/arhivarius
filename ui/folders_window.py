@@ -19,9 +19,25 @@ from ui import i18n as I
 from ui import theme as T
 
 
+class _ParentedBox:
+    """messagebox с parent=окном: диалог всегда поверх «Папок», а не под ним."""
+
+    def __init__(self, window):
+        self._w = window
+
+    def __getattr__(self, name):
+        fn = getattr(messagebox, name)
+
+        def call(*args, **kw):
+            kw.setdefault("parent", self._w)
+            return fn(*args, **kw)
+        return call
+
+
 class FoldersWindow(tk.Toplevel):
     def __init__(self, master, config: dict, log=None):
         super().__init__(master)
+        self.msg = _ParentedBox(self)
         self.config = config
         self.log = log or (lambda m: None)
         self.title(I.tr("Папки · пустые, двойники, навигатор зоны разбора"))
@@ -63,13 +79,13 @@ class FoldersWindow(tk.Toplevel):
             if path.exists():
                 os.startfile(str(path))  # type: ignore[attr-defined]
             else:
-                messagebox.showinfo("Журнал", "Файл журнала ещё не создан.")
+                self.msg.showinfo("Журнал", "Файл журнала ещё не создан.")
         except OSError as exc:
             self.log(f"не открыл журнал: {exc}")
 
     def _run_bg(self, work, done) -> None:
         if self.busy:
-            messagebox.showinfo("Занято", "Дождитесь окончания текущего действия.")
+            self.msg.showinfo("Занято", "Дождитесь окончания текущего действия.")
             return
         self.busy = True
         self.status.configure(text="работаем…")
@@ -79,7 +95,10 @@ class FoldersWindow(tk.Toplevel):
                 result = work()
             except Exception as exc:  # noqa: BLE001
                 result = exc
-            self.after(0, lambda: self._finish(done, result))
+            try:
+                self.after(0, lambda: self._finish(done, result))
+            except tk.TclError:
+                pass   # окно уже закрыли — результат некому показывать
 
         threading.Thread(target=wrap, daemon=True).start()
 
@@ -143,9 +162,9 @@ class FoldersWindow(tk.Toplevel):
     def apply_empties(self) -> None:
         paths = [rel for var, rel in self._empty if var.get()]
         if not paths:
-            messagebox.showinfo("Пустые папки", "Нечего убирать — отметьте галочками.")
+            self.msg.showinfo("Пустые папки", "Нечего убирать — отметьте галочками.")
             return
-        if not messagebox.askyesno(
+        if not self.msg.askyesno(
                 "Корзина", f"{len(paths)} пустых папок уйдут в корзину Windows (восстановимо).\n"
                            "Ни один файл не удаляется. Продолжить?"):
             return
@@ -205,10 +224,10 @@ class FoldersWindow(tk.Toplevel):
     def apply_merges(self) -> None:
         chosen = [g for var, g in self._merges if var.get()]
         if not chosen:
-            messagebox.showinfo("Слияние", "Отметьте галочками группы для слияния.")
+            self.msg.showinfo("Слияние", "Отметьте галочками группы для слияния.")
             return
         total = sum(len(folders_ops.plan_merge(self.config, g)) for g in chosen)
-        if not messagebox.askyesno("Слияние", f"{len(chosen)} групп, {total} перемещений.\n"
+        if not self.msg.askyesno("Слияние", f"{len(chosen)} групп, {total} перемещений.\n"
                                              "Всё пишется в журнал — можно откатить пачкой. Идём?"):
             return
         batch = self._new_batch("слияние")
@@ -238,9 +257,13 @@ class FoldersWindow(tk.Toplevel):
                  bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9), wraplength=780,
                  justify="left").pack(side="left", padx=8)
         plan = folder_router.load_plan_safe(self.config)
+        try:   # снимок читаем ОДИН раз, а не на каждую строку плана
+            snap_for_stats = json.loads(
+                (Path(self.config["output_path"]) / "snapshot.json").read_text("utf-8"))
+        except Exception:
+            snap_for_stats = {"files": []}
         for entry in plan:
             try:
-                snap_for_stats = json.loads((Path(self.config["output_path"]) / "snapshot.json").read_text("utf-8"))
                 st = folders_ops.folder_stats(snap_for_stats, entry["откуда"])
                 est = folders_ops.estimate(st, folders_ops.load_probe(self.config))
                 stat_line = (f"файлов: {st['всего']} (текст {st['текст']} · картинки {st['картинки']})"
@@ -286,9 +309,9 @@ class FoldersWindow(tk.Toplevel):
     def apply_navigator(self) -> None:
         chosen = [entry for var, entry in self._nav if var.get() and entry.get("section")]
         if not chosen:
-            messagebox.showinfo("Навигатор", "Отметьте папки с предложенным разделом.")
+            self.msg.showinfo("Навигатор", "Отметьте папки с предложенным разделом.")
             return
-        if not messagebox.askyesno(
+        if not self.msg.askyesno(
                 "Навигатор", f"Перенести {len(chosen)} папок целиком в предложенные разделы?\n"
                              "Одинаково названные папки на месте сольются (содержимое не теряется, "
                              "журнал с откатом)."):
@@ -333,7 +356,7 @@ class FoldersWindow(tk.Toplevel):
         hints = folders_ops.taxonomy_hints(self.config)
         if not hints:
             return
-        if not messagebox.askyesno("Таксономия", f"Создать {len(hints)} новых папок? Только mkdir, "
+        if not self.msg.askyesno("Таксономия", f"Создать {len(hints)} новых папок? Только mkdir, "
                                                  "переносов не будет."):
             return
         root = Path(str(self.config["scan_root"]))
@@ -369,10 +392,10 @@ class FoldersWindow(tk.Toplevel):
         journal = folders_ops.read_journal(self.config)
         batches = [r["Пачка"] for r in journal if r["Действие"] == "перенести"]
         if not batches:
-            messagebox.showinfo("Откат", "Журнал переносов пуст.")
+            self.msg.showinfo("Откат", "Журнал переносов пуст.")
             return
         batch = batches[-1]
-        if not messagebox.askyesno("Откат", f"Вернуть пачку «{batch}» на прежние места?"):
+        if not self.msg.askyesno("Откат", f"Вернуть пачку «{batch}» на прежние места?"):
             return
         result = folders_ops.undo_batch(self.config, batch)
         folders_ops.invalidate_index_cache()

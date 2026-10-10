@@ -146,28 +146,35 @@ class Analyzer:
             rows = json.loads(target.read_text("utf-8")) if target.exists() else []
         except Exception:
             return out
+        if not isinstance(rows, list):
+            return out
         for row in rows:
-            digest = str(row.get("_хеш") or "")
-            if not digest or row.get("_окончено") is False:
+            if not isinstance(row, dict):
                 continue
-            ev = str(row.get("_дата-события") or "")
-            start, _, end = ev.partition("…")
-            out[digest] = {
-                "doc_type": str(row.get("_тип_документа") or ""),
-                "direction": str(row.get("_направление") or ""),
-                "reg_number": str(row.get("_номер") or ""),
-                "doc_date": str(row.get("_дата") or ""),
-                "event_name": str(row.get("_событие") or ""),
-                "event_start": start, "event_end": end,
-                "new_name": str(row.get("Новое имя") or ""),
-                "target_path": str(row.get("Целевой путь") or ""),
-                "shortcut_to": str(row.get("Путь ярлыка") or ""),
-                "name_confidence": float(row.get("Уверенность имени") or 0),
-                "move_confidence": float(row.get("Уверенность переноса") or 0),
-                "confidence": 0, "review": str(row.get("Статус")) == "проверка",
-                "discard": bool(row.get("_выбросить")),
-                "discard_reason": "", "reason": str(row.get("Причина") or "")[:300],
-            }
+            try:
+                digest = str(row.get("_хеш") or "")
+                if not digest or row.get("_окончено") is False:
+                    continue
+                ev = str(row.get("_дата-события") or "")
+                start, _, end = ev.partition("…")
+                out[digest] = {
+                    "doc_type": str(row.get("_тип_документа") or ""),
+                    "direction": str(row.get("_направление") or ""),
+                    "reg_number": str(row.get("_номер") or ""),
+                    "doc_date": str(row.get("_дата") or ""),
+                    "event_name": str(row.get("_событие") or ""),
+                    "event_start": start, "event_end": end,
+                    "new_name": str(row.get("Новое имя") or ""),
+                    "target_path": str(row.get("Целевой путь") or ""),
+                    "shortcut_to": str(row.get("Путь ярлыка") or ""),
+                    "name_confidence": float(row.get("Уверенность имени") or 0),
+                    "move_confidence": float(row.get("Уверенность переноса") or 0),
+                    "confidence": 0, "review": str(row.get("Статус")) == "проверка",
+                    "discard": bool(row.get("_выбросить")),
+                    "discard_reason": "", "reason": str(row.get("Причина") or "")[:300],
+                }
+            except (TypeError, ValueError):
+                continue   # одна битая строка не должна ронять весь разбор
         return out
 
     def _duplicate_map(self) -> dict[str, list[str]]:
@@ -181,7 +188,8 @@ class Analyzer:
     def queue(self, filters: Filters) -> list[dict]:
         done = self._processed_paths() if filters.skip_done else {}
         mode = str(self.config.get("queue", {}).get("mode", "завалы")).strip().lower()
-        hidden = [str(p).strip("/") for p in self.config.get("folders", {}).get("hide_prefixes", [])]
+        hidden = [str(p).replace("\\", "/").strip("/").casefold()
+                  for p in self.config.get("folders", {}).get("hide_prefixes", [])]
         revision = mode.startswith("ревиз") or mode.startswith("структ")
         intake_only = mode.startswith("завал") or mode.startswith("разбор")
         system_first = mode.startswith("система") or mode.startswith("сначала") or "потом" in mode
@@ -189,7 +197,8 @@ class Analyzer:
         for item in self.snapshot.get("files", []):
             rel = str(item.get("path", "")).replace("\\", "/")
             ext = Path(rel).suffix.lower()
-            is_intake = any(rel.startswith(pref) for pref in hidden)
+            low_rel = rel.casefold()
+            is_intake = any(low_rel == pref or low_rel.startswith(pref + "/") for pref in hidden)
             if revision and is_intake:
                 continue
             if intake_only and not filters.prefix and not is_intake:
@@ -268,21 +277,7 @@ class Analyzer:
 
     # ------------------------------------------------------------------ vision
     def _image_payload(self, path: Path, max_side: int = 0) -> str:
-        max_side = int(max_side or self.vision_max_side)
-        try:
-            from PIL import Image
-
-            with Image.open(path) as img:
-                img = img.convert("RGB")
-                img.thumbnail((max_side, max_side))
-                buffer = io.BytesIO()
-                img.save(buffer, format="JPEG", quality=82)
-            return base64.b64encode(buffer.getvalue()).decode("ascii")
-        except Exception:
-            try:
-                return base64.b64encode(path.read_bytes()).decode("ascii")
-            except Exception:
-                return ""
+        return image_payload(path, int(max_side or self.vision_max_side))
 
     # -------------------------------------------------------------- adaptive
     def _adapt(self, prompt_tokens: int, overflow: bool) -> None:
@@ -436,6 +431,8 @@ class Analyzer:
         rel = str(item.get("path", "")).replace("\\", "/")
         full = self.root / Path(rel)
         started = time.monotonic()
+        self._last_fit = ""      # иначе заметка о сжатии «переедет» с прошлого файла
+        self._last_sec_conf = 0.0
         digest = str(item.get("sha256") or "")
         if self.rules_first:
             from . import prerecognize
@@ -463,9 +460,10 @@ class Analyzer:
         images = []
         if wants_vision:
             if extracted.kind == "image":
-                images = [self._image_payload(full)]
+                payload = self._image_payload(full)
+                images = [payload] if payload else []
             else:
-                images = [img for img in self._pdf_pages_image(full)][:1]
+                images = [img for img in self._pdf_pages_image(full) if img][:1]
         sections: list[str] = []
         section_note = ""
         if not extracted.usable and not images:
@@ -534,6 +532,7 @@ class Analyzer:
                 try:
                     result = client.ask(self.system_prompt, user, RESPONSE_SCHEMA, images=images or None)
                     answer = result.data
+                    error = ""   # предыдущая попытка могла быть overflow — успех её аннулирует
                     usage = {"prompt_tokens": result.prompt_tokens, "seconds": round(usage["seconds"] + (result.seconds or 0), 1),
                              "model": result.model}
                     self._adapt(result.prompt_tokens, False)
@@ -551,6 +550,8 @@ class Analyzer:
                         req_budget = max(self.budget_floor, int(req_budget * 0.7))
                     else:
                         self._adapt(int(req_ctx * 0.95), True)
+                        # иначе следующая попытка соберёт ровно тот же перерост:
+                        req_budget = max(self.budget_floor, min(req_budget, self.budget_chars))
                     self.log(f"  HTTP 500 → сжимаем срез папок, попытка {attempt + 1}/{attempts}")
                 except LlmError as exc:
                     error = str(exc)
@@ -621,14 +622,15 @@ class Analyzer:
             return val
         fold_map = {s.casefold().replace("ё", "е"): s for s in allowed}
         hit = fold_map.get(val.casefold().replace("ё", "е"), "")
-        if not hit and index is None:
+        if hit:
+            return hit
+        if index is None:
             return ""
-        if not hit:
-            # модель часто сняла корень: «Отчеты…/Годовые отчеты» без «Документы/»
-            tail = "/" + val.casefold().replace("ё", "е")
-            suff = [s for s in allowed if s.casefold().replace("ё", "е").endswith(tail)]
-            if len(suff) == 1:
-                return suff[0]
+        # модель часто сняла корень: «Отчеты…/Годовые отчеты» без «Документы/»
+        tail = "/" + val.casefold().replace("ё", "е")
+        suff = [s for s in allowed if s.casefold().replace("ё", "е").endswith(tail)]
+        if len(suff) == 1:
+            return suff[0]
         # путь мог быть собран из цепочек дерева с мелкой ошибкой написания
         from .rules import Verdict, resolve_path
         tries = [val] + ([f"{prefix}/{val}"] if prefix else [])
@@ -772,19 +774,61 @@ class Analyzer:
         merged: dict[str, dict] = {}
         if target.exists():
             try:
-                for row in json.loads(target.read_text("utf-8")):
-                    merged[str(row.get("Текущий путь"))] = row
+                rows = json.loads(target.read_text("utf-8"))
+                for row in (rows if isinstance(rows, list) else []):
+                    if isinstance(row, dict):
+                        merged[str(row.get("Текущий путь"))] = row
             except Exception:
+                # молча потерять всю историю хешей хуже, одна лишняя копия — не беда
+                try:
+                    corrupt = target.with_name(
+                        f"suggestions.bad-{datetime.now():%Y%m%d-%H%M%S}.json")
+                    target.replace(corrupt)
+                    self.log(f"suggestions.json был нечитаем — сохранена копия {corrupt.name}")
+                except OSError:
+                    pass
                 merged = {}
         for row in self.records:
             merged[str(row.get("Текущий путь"))] = row
         text = json.dumps(list(merged.values()), ensure_ascii=False, indent=2)
         tmp = target.with_suffix(".tmp")
-        tmp.write_text(text, "utf-8")
-        tmp.replace(target)
+        try:
+            tmp.write_text(text, "utf-8")
+            tmp.replace(target)
+        except OSError as exc:
+            self.log(f"не записал suggestions.json ({type(exc).__name__}: {exc}) — "
+                     "решения этой пачки остались только в карте")
+
+
+def image_payload(path: Path, max_side: int = 1024) -> str:
+    """Картинка → base64, уменьшенная под vision-окно модели (12 МП JPEG в модель не гоним)."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((max_side, max_side))
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=82)
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception:
+        try:
+            return base64.b64encode(path.read_bytes()).decode("ascii")
+        except Exception:
+            return ""
 
 
 _CACHE: dict[str, tuple[object, object]] = {}
+
+
+def invalidate_snapshot_cache(output_path) -> None:
+    """Забыть кэш снимка+индекса после скана — иначе «свежие» папки считаются выдуманными."""
+    _CACHE.pop(str(output_path), None)
+    try:
+        from . import folders_ops
+        folders_ops.invalidate_index_cache()
+    except Exception:
+        pass
 
 
 def _snapshot_and_index(config: dict):

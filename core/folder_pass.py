@@ -18,6 +18,7 @@ from . import mapio
 from .config_loader import MAP_NAME
 from .extract import IMAGE_EXT, extract
 from .prompts import build_system, parse_answer
+from .rules import conf_value
 
 BATCH_ITEM = {
     "type": "object",
@@ -98,7 +99,14 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
     files = list_folder(config, rel_folder)[:max(1, int(limit))]
     if not files:
         return {"файлов": 0}
-    names = "\n".join(f"- {p.name} ({p.stat().st_size // 1024} КБ)" for p in files)
+
+    def _kb(p: Path) -> int:
+        try:
+            return p.stat().st_size // 1024
+        except OSError:
+            return 0
+
+    names = "\n".join(f"- {p.name} ({_kb(p)} КБ)" for p in files)
     llm_cfg = config.get("llm", {})
     client = OllamaClient(
         base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
@@ -136,6 +144,8 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
     rows: list[dict] = []
     seen: set[str] = set()
     for item in items:
+        if not isinstance(item, dict):
+            continue
         name = str(item.get("file", "")).strip().strip('"')
         path = known.get(name)
         if path is None:
@@ -148,6 +158,7 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
         seen.add(path.name.casefold())
         rel = str(path.relative_to(config["scan_root"])).replace("\\", "/")
         new_name = _keep_ext(path, str(item.get("new_name", "") or path.name))
+        conf = conf_value(item.get("confidence")) or 0.0
         rows.append({
             "Текущий путь": rel, "Текущее имя": path.name,
             "Тип операции": "перенос + переименование" if (new_name != path.name or
@@ -155,8 +166,8 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
             "Новое имя": new_name,
             "Целевой путь": str(item.get("target_path", "")).strip().strip("/"),
             "Путь ярлыка": "",
-            "Уверенность имени": f"{float(item.get('confidence') or 0):.2f}",
-            "Уверенность переноса": f"{float(item.get('confidence') or 0):.2f}",
+            "Уверенность имени": f"{conf:.2f}",
+            "Уверенность переноса": f"{conf:.2f}",
             "Причина": "проход «папка целиком»: " + str(item.get("reason", ""))[:220],
             "Применить": "FALSE", "Статус": "проверка", "Комментарий": "",
         })
@@ -200,14 +211,15 @@ def _vision_pass(config: dict, images: list[Path], folders_block: str, log, prog
             log(f"зрение не сработало для {path.name}: {type(exc).__name__}")
             continue
         rel = str(path.relative_to(config["scan_root"])).replace("\\", "/")
+        conf = conf_value(data.get("confidence")) or 0.0
         rows.append({
             "Текущий путь": rel, "Текущее имя": path.name,
             "Тип операции": "перенос + переименование",
             "Новое имя": _keep_ext(path, str(data.get("new_name", "") or path.name)),
             "Целевой путь": str(data.get("target_path", "")).strip().strip("/"),
             "Путь ярлыка": "",
-            "Уверенность имени": f"{float(data.get('confidence') or 0):.2f}",
-            "Уверенность переноса": f"{float(data.get('confidence') or 0):.2f}",
+            "Уверенность имени": f"{conf:.2f}",
+            "Уверенность переноса": f"{conf:.2f}",
             "Причина": "зрение: " + str(data.get("what", ""))[:200],
             "Применить": "FALSE", "Статус": "проверка", "Комментарий": "",
         })
@@ -235,7 +247,10 @@ def _merge_map(config: dict, rows: list[dict]) -> dict:
             by_path[rel] = row
             added += 1
             continue
-        if str(old.get("Комментарий", "")).strip() or str(old.get("Статус", "")) in {"готово", "перенесено"}:
+        if (str(old.get("Комментарий", "")).strip()
+                or str(old.get("Путь ярлыка", "")).strip()
+                or str(old.get("Применить", "")).strip().upper() == "TRUE"
+                or str(old.get("Статус", "")) in {"готово", "перенесено"}):
             continue  # строку уже трогал человек — не переезжаем
         old.update(row)
         updated += 1

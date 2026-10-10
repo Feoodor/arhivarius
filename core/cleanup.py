@@ -45,9 +45,16 @@ def candidates(config: dict, snapshot: dict | None = None, limit: int = 0) -> li
     root: Path = config["scan_root"]
     rows: list[dict] = []
     seen: set[str] = set()
+    try:  # то, что уже лежит в корзине отдела, повторно не предлагаем
+        trash_rel = str(trash_dir(config).relative_to(root)).replace("\\", "/").casefold().strip("/")
+    except (ValueError, OSError):
+        trash_rel = ""
 
     def add(item: dict, reason: str, strength: str) -> None:
         rel = str(item.get("path", "")).replace("\\", "/")
+        low = rel.casefold()
+        if trash_rel and (low == trash_rel or low.startswith(trash_rel + "/")):
+            return   # уже в корзине — не предлагаем второй раз
         if rel in seen:
             return
         seen.add(rel)
@@ -114,15 +121,11 @@ def mark_from_model(records: list[dict]) -> list[dict]:
 
 
 def write_report(config: dict, rows: list[dict]) -> Path:
-    import csv
+    from .scanner import write_csv
 
-    target = config["output_path"] / "trash_candidates.csv"
-    target.parent.mkdir(parents=True, exist_ok=True)
     fields = ["Путь", "Имя", "Размер", "Изменён", "Причина", "Уверенность", "Отметить"]
-    with target.open("w", newline="", encoding="utf-8-sig") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore", delimiter=";")
-        writer.writeheader()
-        writer.writerows(rows)
+    target = config["output_path"] / "trash_candidates.csv"
+    write_csv(target, fields, rows)
     return target
 
 
@@ -131,7 +134,7 @@ def move_to_trash(config: dict, rows: list[dict], progress=None) -> dict:
     root: Path = config["scan_root"]
     output: Path = config["output_path"]
     trash = trash_dir(config)
-    from .applier import _load_log, _save_log, batch_id, unique_path
+    from .applier import _load_log, _safe_target, _save_log, batch_id, unique_path
 
     batch = batch_id()
     moved, failed, undo = 0, 0, []
@@ -143,7 +146,19 @@ def move_to_trash(config: dict, rows: list[dict], progress=None) -> dict:
             continue
         if progress:
             progress(number, len(rows), rel)
-        source = root / rel
+        try:
+            source = _safe_target(root, rel)   # «..» и чужие диски — сюда не проходят
+        except ValueError as exc:
+            failed += 1
+            log_rows.append({
+                "Дата": datetime.now().isoformat(timespec="seconds"),
+                "Действие": "в корзину",
+                "Исходный путь": rel,
+                "Новый путь": "",
+                "Статус": "ошибка: опасный путь",
+                "Комментарий": str(exc)[:200],
+            })
+            continue
         if not source.exists():
             failed += 1
             continue

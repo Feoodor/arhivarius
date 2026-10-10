@@ -48,8 +48,12 @@ def _load_cache(config) -> dict:
 
 def _save_cache(config, cache) -> None:
     try:
-        (config["output_path"] / CACHE_NAME).write_text(
-            json.dumps(cache, ensure_ascii=False), "utf-8")
+        import os
+
+        target = config["output_path"] / CACHE_NAME
+        tmp = target.with_name(CACHE_NAME + ".tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), "utf-8")
+        os.replace(tmp, target)
     except OSError:
         pass
 

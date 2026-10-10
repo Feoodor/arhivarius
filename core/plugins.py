@@ -126,7 +126,8 @@ def find_program(name: str, config: dict | None = None) -> str:
         if not parent.is_dir():
             continue
         for hit in sorted(parent.glob(f"*{name}*")):
-            if hit.is_file():
+            if (hit.is_file() and hit.suffix.lower() == ".exe"
+                    and not hit.name.casefold().startswith("unins")):
                 return str(hit)
     return ""
 
@@ -285,7 +286,12 @@ def install(plugin_id: str, log=print, config: dict | None = None) -> bool:
         log(f"{plugin.name}: библиотек для установки не требуется. {plugin.note}")
         return False
     log("выполняю: " + " ".join(command))
-    process = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        process = subprocess.run(command, capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=600)
+    except subprocess.TimeoutExpired:
+        log("pip молчал 10 минут — прервано. Проверьте интернет или установите вручную.")
+        return False
     for line in (process.stdout or "").splitlines()[-12:]:
         log("  " + line)
     if process.returncode != 0:
@@ -595,7 +601,7 @@ def convert_legacy(config: dict, apply: bool = False, limit: int = 50, progress=
     if limit:
         targets = targets[:limit]
     word = None
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_program("soffice", config) or shutil.which("libreoffice")
     if apply and not soffice:
         try:
             import pythoncom  # noqa: F401

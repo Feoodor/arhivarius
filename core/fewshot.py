@@ -49,8 +49,12 @@ def refresh(config) -> int:
             if len(cases) >= MAX_CASES:
                 break
     try:
-        (config["output_path"] / STORE_NAME).write_text(
-            json.dumps(cases, ensure_ascii=False), "utf-8")
+        import os
+
+        target = config["output_path"] / STORE_NAME
+        tmp = target.with_name(STORE_NAME + ".tmp")
+        tmp.write_text(json.dumps(cases, ensure_ascii=False), "utf-8")
+        os.replace(tmp, target)
     except OSError:
         pass
     return len(cases)

@@ -46,8 +46,12 @@ def is_excluded(path: Path, config: dict, is_dir: bool = False) -> bool:
     name = path.name.casefold()
     if name in config["excluded_names"]:
         return True
-    if is_dir and name in config["excluded_dirs"]:
-        return True
+    if is_dir:
+        if name in config["excluded_dirs"]:
+            return True
+        output = config.get("output_path")
+        if output and name == Path(str(output)).name.casefold():
+            return True   # служебная папка программы — не часть архива
     return any(name.startswith(prefix.casefold()) for prefix in config["excluded_prefixes"])
 
 
@@ -78,14 +82,21 @@ def scan(config: dict, progress: Callable[[str, int], None] | None = None) -> di
     files: list[dict] = []
     archives: list[dict] = []
     folders: list[str] = []
+    walk_errors: list[str] = []
     reused = hashed = 0
     position = 0
 
-    for current, dirs, names in os.walk(root):
+    def _note_error(err: OSError) -> None:
+        if len(walk_errors) < 100:
+            walk_errors.append(str(err))
+
+    for current, dirs, names in os.walk(root, onerror=_note_error):
         current_path = Path(current)
         dirs[:] = sorted(d for d in dirs if not is_excluded(current_path / d, config, is_dir=True))
+        cur_rel = os.path.relpath(current, root).replace("\\", "/")
+        cur_rel = "" if cur_rel == "." else cur_rel
         if current_path != root:
-            folders.append(relative_path(current_path, root))
+            folders.append(cur_rel)
         for name in sorted(names):
             if is_excluded(current_path / name, config):
                 continue
@@ -93,7 +104,7 @@ def scan(config: dict, progress: Callable[[str, int], None] | None = None) -> di
             position += 1
             if progress and position % 200 == 0:
                 progress(name, position)
-            rel = relative_path(path, root)
+            rel = f"{cur_rel + '/' if cur_rel else ''}{name}"
             try:
                 stat = path.stat()
                 row = {
@@ -130,11 +141,20 @@ def scan(config: dict, progress: Callable[[str, int], None] | None = None) -> di
         "folders": sorted(set(folders)),
         "files": files,
         "archives": archives,
-        "stats": {"хешей_взято_из_прошлого_снимка": reused, "захешировано_заново": hashed},
+        "stats": {"хешей_взято_из_прошлого_снимка": reused, "захешировано_заново": hashed,
+                  "ошибки_обхода": walk_errors},
     }
-    (output / SNAPSHOT_NAME).write_text(json.dumps(snapshot, ensure_ascii=False), "utf-8")
+    target = output / SNAPSHOT_NAME
+    tmp = output / (SNAPSHOT_NAME + ".tmp")
+    tmp.write_text(json.dumps(snapshot, ensure_ascii=False), "utf-8")
+    tmp.replace(target)
     write_csv(output / "inventory.csv", INVENTORY_FIELDS, files)
     write_csv(output / "archives.csv", INVENTORY_FIELDS, archives)
+    try:  # карта папок и индексы должны увидеть свежее дерево сразу, без перезапуска
+        from . import pipeline
+        pipeline.invalidate_snapshot_cache(output)
+    except Exception:
+        pass
     return snapshot
 
 
@@ -142,7 +162,10 @@ def load_snapshot(config: dict) -> dict | None:
     target = config["output_path"] / SNAPSHOT_NAME
     if not target.exists():
         return None
-    return json.loads(target.read_text("utf-8"))
+    try:
+        return json.loads(target.read_text("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None   # битый снимок = «снимка нет»: потребитель честно попросит скан
 
 
 def duplicate_groups(snapshot: dict) -> list[tuple[str, list[dict]]]:
@@ -159,7 +182,8 @@ def duplicates_report(config: dict) -> dict:
     groups = duplicate_groups(snapshot)
     rows = []
     for digest, items in groups:
-        for number, item in enumerate(items, 1):
+        ordered = sorted(items, key=lambda i: (str(i.get("path", "")).count("/"), str(i.get("path", ""))))
+        for number, item in enumerate(ordered, 1):
             rows.append({
                 "хеш": digest[:12],
                 "копия": number,

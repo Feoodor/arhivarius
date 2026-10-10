@@ -91,7 +91,7 @@ DEFAULTS: dict = {
         "Отчеты и планы по работе", "Архив (не актуальное)", "Входящие", "Исходящие",
         "Грамоты - Благодарности", "Прошения - Рапорты", "Информационное - Циркулярное",
         "Дизайн", "Поздравления", "СМИ", "Приглашения", "Документы общие",
-        "Епархиальный совет", "Методические материалы", "90_Завершённые_проекты_и_форматы",
+        "Вышестоящие решения", "Методические материалы", "90_Завершённые_проекты_и_форматы",
     ],
     "routing": {
         "personal_root": "Личное - другие проекты",
@@ -125,33 +125,48 @@ CHARS_PER_TOKEN = 2.6          # устойчивая оценка для рус
 ANSWER_RESERVE_TOKENS = 900    # ответ модели + обвязка чата
 
 
+def _as_int(value, default: int) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def slice_budget(config: dict, system_chars: int = 0, content_chars: int | None = None) -> int:
     """Сколько символов карты папок безопасно влезает при текущем num_ctx.
 
     Из контекста вычитаем системную инструкцию (она в каждом запросе), текст
     файла, запас на ответ и шаблон чата. Остаток — бюджет среза папок.
+    Честный маленький остаток лучше floor-заведомого перероста.
     """
     llm = config.get("llm", {})
     folders = config.get("folders", {})
-    num_ctx = int(llm.get("num_ctx", 16384))
-    content = int(llm.get("content_chars", 6000) if content_chars is None else content_chars)
+    num_ctx = _as_int(llm.get("num_ctx", 16384), 16384)
+    content = _as_int(llm.get("content_chars", 9000) if content_chars is None else content_chars, 9000)
     used = (int(system_chars) + content) / CHARS_PER_TOKEN + ANSWER_RESERVE_TOKENS
     room = int(max(0, num_ctx - used) * CHARS_PER_TOKEN)
-    configured = int(folders.get("budget_chars", 22000))
-    floor = int(folders.get("budget_min_chars", 6000))
-    return int(max(floor, min(configured, room)))
+    configured = _as_int(folders.get("budget_chars", 22000), 22000)
+    return int(min(configured, max(800, room)))
 
 
-def load_config(app_dir: Path | None = None, write_if_missing: bool = True) -> dict:
+def load_config(app_dir: Path | None = None, write_if_missing: bool = True,
+                config_name: str = CONFIG_NAME) -> dict:
     if app_dir is None:
         import sys
         app_dir = (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False)
                    else Path(__file__).resolve().parent.parent)
     app_dir = Path(app_dir).resolve()
-    config_path = app_dir / CONFIG_NAME
+    config_path = app_dir / (config_name or CONFIG_NAME)
     if not config_path.exists() and write_if_missing:
         config_path.write_text(json.dumps(DEFAULTS, ensure_ascii=False, indent=2), "utf-8")
-    raw = json.loads(config_path.read_text("utf-8")) if config_path.exists() else {}
+    try:
+        raw = json.loads(config_path.read_text("utf-8")) if config_path.exists() else {}
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            f"config.json повреждён ({exc}). Почините его или переименуйте — "
+            "программа создаст новый по настройкам по умолчанию.") from exc
+    if not isinstance(raw, dict):
+        raw = {}
     config = _merge(DEFAULTS, raw)
 
     problems: list[str] = []
@@ -161,19 +176,27 @@ def load_config(app_dir: Path | None = None, write_if_missing: bool = True) -> d
         problems.append("base_url был некорректным — подставлен локальный адрес Ollama")
     config["llm"]["base_url"] = base_url.rstrip("/")
 
-    num_ctx = int(config["llm"]["num_ctx"])
+    num_ctx = _as_int(config["llm"]["num_ctx"], DEFAULTS["llm"]["num_ctx"])
+    if num_ctx != config["llm"]["num_ctx"]:
+        problems.append(f"llm.num_ctx={config['llm']['num_ctx']!r} не число — взято {num_ctx}")
+        config["llm"]["num_ctx"] = num_ctx
     if num_ctx < 4096:
         problems.append(f"num_ctx={num_ctx} мал для промпта с правилами; нужно не меньше 4096")
     prompt_file = app_dir / "prompt.md"
     system_chars = len(prompt_file.read_text("utf-8")) if prompt_file.exists() else 0
     config["system_prompt_chars"] = system_chars
     room = slice_budget(config, system_chars)
-    budget = int(config["folders"]["budget_chars"])
+    budget = _as_int(config["folders"]["budget_chars"], DEFAULTS["folders"]["budget_chars"])
+    if budget != config["folders"]["budget_chars"]:
+        problems.append(f"folders.budget_chars={config['folders']['budget_chars']!r} не число — "
+                        f"взято {budget}")
+        config["folders"]["budget_chars"] = budget
     if budget > room:
         problems.append(
             f"карта папок {budget} симв. не влезает в num_ctx={num_ctx}: инструкция занимает "
             f"~{int(system_chars / CHARS_PER_TOKEN)} ток., текст файла ~"
-            f"{int(config['llm']['content_chars'] / CHARS_PER_TOKEN)} ток.; срез будет ужат до {room} симв. "
+            f"{_as_int(config['llm'].get('content_chars'), 9000) // int(CHARS_PER_TOKEN)} ток.; "
+            f"срез будет ужат до {room} симв. "
             f"или увеличьте num_ctx"
         )
         config["folders"]["budget_chars_effective"] = room
@@ -222,12 +245,11 @@ def load_config(app_dir: Path | None = None, write_if_missing: bool = True) -> d
     config["mo_root"] = _resolve(config["mo_root"], app_dir)
     config["scan_root"] = _resolve(config["scan_root"], app_dir)
     config["output_path"] = _resolve(config["output_dir"], app_dir)
-    config["config_path"] = app_dir / CONFIG_NAME
+    config["config_path"] = config_path
 
     routing = config["routing"]
     routing["external"] = {k: _resolve(v, app_dir) for k, v in dict(routing.get("external") or {}).items()}
     names = {str(name).casefold() for name in config["excluded_names"]}
-    names.add(config["output_path"].name.casefold())
     config["excluded_names"] = names
     config["excluded_dirs"] = {str(folder).casefold() for folder in config["excluded_dirs"]}
     config["excluded_prefixes"] = tuple(config["excluded_prefixes"])

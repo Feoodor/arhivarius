@@ -179,9 +179,13 @@ def refine_staged(config: dict, rel_path: str, previous: dict | None = None,
     steps["place"] = place_out
 
     total_secs = round((datetime.now() - started).total_seconds(), 1)
-    return _merge(facts, new_name, name_conf, place_out, filename=filename,
-                  prev_target=prev_target, cur_dir=rel.rpartition("/")[0], index=index,
-                  seconds=total_secs, model=model, steps=steps)
+    answer = _merge(facts, new_name, name_conf, place_out, filename=filename,
+                    prev_target=prev_target, cur_dir=rel.rpartition("/")[0], index=index,
+                    seconds=total_secs, model=model, steps=steps)
+    if index is not None:
+        from .refine import _sanitize
+        answer.update(_sanitize(config, index, rel, answer))
+    return answer
 
 
 def _merge(facts: dict, new_name: str, name_conf: float, place_out: dict, *,

@@ -20,6 +20,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .extract import IMAGE_EXT
+from .rules import clean_file_name, fold
+
 CANON_HEAD = re.compile(r"^(?:19|20)\d{2}(?:-\d{2}){0,2}_[А-ЯЁA-Z][\w-]+_.+\.[A-Za-zА-Яа-яЁё0-9]{2,5}$")
 SCREEN_NAME = re.compile(r"(снимок\s*экрана|screen_?shot|screenshot|screen\d|экран\d)", re.I)
 SHORTCUT_EXT = {".lnk", ".url", ".gdoc", ".gsheet", ".gslides", ".gform", ".gdraw",
@@ -55,12 +58,13 @@ def deterministic(item: dict, index, config: dict) -> dict | None:
                 "reason": "правило: служебный ярлык/ссылка — содержимое не читается, решает человек"}
 
     # R1 — имя уже по регламенту, файл не в зоне разбора: ничего не делаем
-    if not intake and CANON_HEAD.match(name) and parent and parent in index.by_path:
+    if (not intake and CANON_HEAD.match(name) and parent and parent in index.by_path
+            and clean_file_name(name, Path(name).suffix.lower()) == name):
         return {**base, "new_name": name, "target_path": parent,
                 "reason": "правило: имя по регламенту и лежит в постоянной папке — менять нечего"}
 
-    # R6 — скриншоты
-    if SCREEN_NAME.search(name):
+    # R6 — скриншоты (только настоящие картинки: по одному имени .docx в «Скриншоты» нельзя)
+    if SCREEN_NAME.search(name) and Path(name).suffix.lower() in IMAGE_EXT:
         shot = next((p for p in index.by_path if p.casefold().endswith("дизайн/скриншоты")), "")
         if shot:
             return {**base, "new_name": name, "target_path": shot, "doc_type": "Изображение",
@@ -93,16 +97,15 @@ def deterministic(item: dict, index, config: dict) -> dict | None:
         m_year = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", name)
         if m_year:
             year = m_year.group(0)
-            kid = target + "/" + year
-            kid_fold = kid.casefold().replace("ё", "е")
-            match = next((p for p in index.by_path
-                          if p.casefold().replace("ё", "е") == kid_fold), "")
+            node = index.by_path.get(target)
+            kids = list(node.children) if node is not None else []
+            kid_fold = fold(year)
+            match = next((k for k in kids if fold(k) == kid_fold), "")
             if not match:  # может, год живёт в названии подпапки («2026-07_Летний_слёт»)
-                pref = kid_fold + "_"
-                cands = [pp for pp in index.by_path if pp.casefold().replace("ё", "е").startswith(pref)]
+                cands = [k for k in kids if fold(k).startswith(kid_fold + "_")]
                 match = cands[0] if len(cands) == 1 else ""
             if match:
-                target = match
+                target = f"{target}/{match}"
         if target != parent:
             return {**base, "new_name": name, "target_path": target,
                     "reason": "правило: имя файла называет существующую папку «"

@@ -49,8 +49,15 @@ def find_similar(config, prefixes: list[str] | None = None, max_files: int = 400
         rel_dir = Path(dirpath).relative_to(root).as_posix().strip(".")
         dirnames[:] = [d for d in dirnames
                        if not d.startswith((".", "~$", "._")) and d.casefold() not in prune]
-        if prefixes and not any(rel_dir.startswith(p.strip("/")) for p in prefixes):
-            continue
+        if prefixes:
+            hit = False
+            for p in prefixes:
+                pp = p.replace("\\", "/").strip("/").casefold()
+                if not pp or rel_dir.casefold() in {pp, ""} or rel_dir.casefold().startswith(pp + "/"):
+                    hit = True
+                    break
+            if not hit:
+                continue
         for f in filenames:
             if Path(f).suffix.lower() not in IMAGE_EXT:
                 continue

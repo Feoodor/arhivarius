@@ -152,15 +152,29 @@ class OllamaClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout or self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
+            try:
+                return json.loads(body.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise LlmError(
+                    f"Ollama вернула не-JSON ({type(exc).__name__}): {body[:120]!r}") from exc
         except urllib.error.HTTPError as exc:
             detail = ""
             try:
                 detail = exc.read().decode("utf-8", errors="replace")[:400]
             except Exception:
                 pass
-            if exc.code >= 500 or "context" in detail.lower() or "too many" in detail.lower():
+            low = detail.lower()
+            looks_overflow = any(
+                phrase in low for phrase in
+                ("context length", "context window", "exceeds", "too long",
+                 "increase context", "please increase", "more system memory",
+                 "too many images", "maximum context"))
+            if looks_overflow:
                 raise ContextOverflow(f"HTTP {exc.code}: {detail or exc.reason}") from exc
+            if exc.code >= 500:
+                # временный сбой сервера — обычная воспроизводимая ошибка, не переполнение
+                raise LlmError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
             raise LlmError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
         except urllib.error.URLError as exc:
             raise LlmError(f"Ollama недоступна: {exc.reason}") from exc

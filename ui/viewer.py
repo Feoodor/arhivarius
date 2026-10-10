@@ -375,17 +375,20 @@ class FileViewer(tk.Toplevel):
 
     # ---------------------------------------------------------------- content
     def _load_content(self) -> None:
-        if not self.path.exists():
-            self._show_text("(файла нет на диске — возможно, он уже перенесён вручную)")
-            return
-        data = extract(self.path, 12000, 4)
-        ext = self.path.suffix.lower()
-        if ext in IMAGE_EXT:
-            self._show_image(data)
-        elif ext == ".pdf":
-            self._show_pdf(data)
-        else:
-            self._show_text(data.text or f"(текст не извлечён: {data.note or data.kind})")
+        try:
+            if not self.path.exists():
+                self._show_text("(файла нет на диске — возможно, он уже перенесён вручную)")
+                return
+            data = extract(self.path, 12000, 4)
+            ext = self.path.suffix.lower()
+            if ext in IMAGE_EXT:
+                self._show_image(data)
+            elif ext == ".pdf":
+                self._show_pdf(data)
+            else:
+                self._show_text(data.text or f"(текст не извлечён: {data.note or data.kind})")
+        except Exception as exc:  # битый файл/пропавший диск — пишем в превью, а не в пустоту
+            self._show_text(f"(не удалось открыть файл: {type(exc).__name__}: {exc})")
 
     def _reset_left(self) -> None:
         self.preview.pack_forget()
@@ -594,11 +597,18 @@ class FileViewer(tk.Toplevel):
         if not self._refined:
             return
         ans = self._refined
+
+        def _f(value, default=0.0):
+            try:
+                return round(float(value), 2)
+            except (TypeError, ValueError):
+                return default
+
         self.name_var.set(ans.get("new_name", ""))
         self.target_var.set(ans.get("target_path", ""))
-        overall = ans.get("confidence", "")
-        self.row["Уверенность имени"] = round(float(ans.get("name_confidence", overall) or 0), 2)
-        self.row["Уверенность переноса"] = round(float(ans.get("move_confidence", overall) or 0), 2)
+        overall = _f(ans.get("confidence", ""), 0.0)
+        self.row["Уверенность имени"] = _f(ans.get("name_confidence", overall), overall)
+        self.row["Уверенность переноса"] = _f(ans.get("move_confidence", overall), overall)
         self.row["Причина"] = ("перепроверка: " + str(ans.get("reason", "")))[:400]
         if not quiet:
             self._refine_set("✔ Улучшенный вариант подставлен в поля выше — проверьте и утвердите",

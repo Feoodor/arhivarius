@@ -5,7 +5,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('ui/guide.txt', 'ui')],
+    datas=[('ui/guide.txt', 'ui'), ('logo.png', '.')],
     hiddenimports=['core.stages', 'core.audit', 'core.refine', 'core.lessons', 'core.routing',
                    'core.folders_ops', 'core.folder_router', 'core.prerecognize', 'core.fewshot',
                    'core.photodupes', 'core.embeds', 'ui.folders_window', 'ui.i18n'],

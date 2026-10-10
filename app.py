@@ -60,7 +60,8 @@ def hr(title: str) -> None:
 def estimate_prompt_tokens(config: dict) -> dict:
     system = build_system(config)
     system_tokens = int(len(system) / 2.6)
-    folders = int(config["folders"]["budget_chars"] / 2.6)
+    budget = config["folders"].get("budget_chars_effective") or config["folders"]["budget_chars"]
+    folders = int(budget / 2.6)
     content = int(config["llm"]["content_chars"] / 2.6)
     return {
         "system": system_tokens,
@@ -587,11 +588,43 @@ COMMANDS = {
 }
 
 
+def ensure_single_instance() -> bool:
+    """Два окна двигают одни и те же файлы и пишут одну карту — второй запуск блокируем."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ArhivariusMO")
+        if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+            return False
+        globals()["_SINGLE_INSTANCE_MUTEX"] = handle       # держим до выхода процесса
+        return True
+    except Exception:
+        return True
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
-    config = load_config(Path(args.config).resolve().parent)
     command = args.command or "gui"
+    try:
+        cfg_file = Path(args.config).resolve()
+        config = load_config(cfg_file.parent, config_name=cfg_file.name)
+    except Exception as exc:
+        say(f"не загружен {args.config}: {type(exc).__name__}: {exc}")
+        say("почините файл настроек или переименуйте его — создастся новый по умолчанию")
+        return 2
+    if command in ("gui", "apply", "undo") and not ensure_single_instance():
+        msg = ("Архивариус уже запущен. Два экземпляра могут перемещать одни и те же файлы — "
+               "закройте первый и повторите.")
+        say(msg)
+        if getattr(sys, "frozen", False):
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, msg, "Архивариус", 0x30 | 0x1000)
+            except Exception:
+                pass
+        return 1
     try:
         if command in COMMANDS:
             return COMMANDS[command](config)

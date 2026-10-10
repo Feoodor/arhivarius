@@ -160,7 +160,25 @@ move_confidence. Если первое предложение было верн�
         answer["new_name"] = Path(rel).name
     if not answer["target_path"]:
         answer["target_path"] = rel.rpartition("/")[0]
+    answer.update(_sanitize(config, _index, rel, answer))
     return answer
+
+
+def _sanitize(config: dict, index, rel: str, answer: dict) -> dict:
+    """Те же страховки, что у build_record: имя и путь должны быть чистыми и реальными."""
+    if index is None:
+        return {}
+    from .rules import (Verdict, canonicalize_target, clean_file_name,
+                        normalize_target, resolve_path, strip_file_from_target)
+
+    verdict = Verdict()
+    name = clean_file_name(str(answer.get("new_name", "")), Path(rel).suffix.lower())
+    target = str(answer.get("target_path", "") or "").replace("\\", "/").strip().strip("/")
+    target = normalize_target(target, config, index, verdict)
+    target = strip_file_from_target(target, name, Path(rel).name, verdict)
+    target = canonicalize_target(target, config, verdict)
+    target = resolve_path(target, index, verdict)
+    return {"new_name": name, "target_path": target or str(answer.get("target_path", ""))}
 
 
 def _listing(config: dict, rel_folder: str, cap: int = 60) -> str:
@@ -177,7 +195,7 @@ def _listing(config: dict, rel_folder: str, cap: int = 60) -> str:
 
 
 def _maybe_image(config: dict, rel: str, data):
-    """Картинку и PDF-скан отдаём зрению, если оно включено."""
+    """Картинку и PDF-скан отдаём зрению, если оно включено (уменьшенными, как в конвейере)."""
     from .extract import IMAGE_EXT
 
     llm_cfg = config.get("llm", {})
@@ -185,19 +203,35 @@ def _maybe_image(config: dict, rel: str, data):
         return None
     path = config["scan_root"] / rel
     ext = path.suffix.lower()
+    max_side = int(llm_cfg.get("vision_max_side", 1024))
     if ext in IMAGE_EXT:
         try:
-            import base64
-            return [base64.b64encode(path.read_bytes()).decode()]
+            from .pipeline import image_payload
+            payload = image_payload(path, max_side)
+            return [payload] if payload else None
         except OSError:
             return None
     if ext == ".pdf":
         try:
             import base64
             import fitz
+            import io
+            from PIL import Image
+
             with fitz.open(path) as doc:
                 pix = doc[0].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            return [base64.b64encode(pix.tobytes("png")).decode()]
+                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+                img.thumbnail((max_side, max_side))
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=82)
+            return [base64.b64encode(buf.getvalue()).decode()]
         except Exception:
-            return None
+            try:
+                import base64
+                import fitz
+                with fitz.open(path) as doc:
+                    pix = doc[0].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                return [base64.b64encode(pix.tobytes("png")).decode()]
+            except Exception:
+                return None
     return None

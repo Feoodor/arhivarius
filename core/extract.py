@@ -312,6 +312,7 @@ def extract(path: Path, content_chars: int = 3200, max_pdf_pages: int = 12,
             res.text = recognized
             res.meta["ocr"] = True
             res.force_review = False
+            res.needs_vision = False   # текст уже есть — «смотреть глазами» не требуется
             res.note = "текст получен распознаванием — проверьте ключевые данные"
             if res.kind == "pdf-scan":
                 res.kind = "pdf-ocr"

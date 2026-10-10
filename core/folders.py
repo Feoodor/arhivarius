@@ -498,17 +498,16 @@ class FolderIndex:
         вызывающий код зумит разбор вглубь (просит модель сузить раздел)."""
         sections = [s for s in sections if s]
         pack: ContextPack | None = None
-        for d in range(max(1, int(depth)), 1, -1):
+        for d in range(max(2, int(depth)), 1, -1):   # хотя бы одна попытка даже при depth<=1
             keep = self.subtree_keep(sections, depth=d - 1, anchor=anchor,
                                      anchor_depth=anchor_depth, show_other_roots=True)
             pack = self.pack_from_keep(keep, show_files, budget_chars)
             pack.notes = [f"поддерево выбранных разделов до {d} ярусов от их корня"]
             if pack.fits:
                 return pack
-        if pack is None:  # разделов нет — возвращаем хотя бы корни
+        if pack is None or not sections:  # разделов нет — возвращаем хотя бы корни
             pack = self.pack_from_keep(self.keep_up_to(1), False, budget_chars)
             pack.notes = ["раздел не выбран — только корни"]
-            pack.fits = pack.fits and True
         else:
             pack.fits = False
             pack.notes.append("поддерево не влезло целиком — нужен зум вглубь")

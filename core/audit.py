@@ -116,7 +116,6 @@ def find_anomalies(rows: list[dict], index=None) -> list[dict]:
 
         # 4. Уверенно, но годы расходятся
         if target and effective_name and name_c and move_c and name_c >= 0.8 and move_c >= 0.8:
-            nm_years = set(_YEAR_RE.findall(effective_name))
             nm_years = {m[0] + m[1] for m in _YEAR_RE.finditer(effective_name)}
             tg_years = {m[0] + m[1] for m in _YEAR_RE.finditer(target)}
             if nm_years and tg_years and not (nm_years & tg_years):

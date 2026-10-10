@@ -17,7 +17,6 @@ if errorlevel 1 (
   echo Ollama is not answering on 127.0.0.1 - starting local server in background...
   if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" (
     set "OLLAMA_HOST=127.0.0.1:11434"
-    if exist "E:\.ollama\models" set "OLLAMA_MODELS=E:\.ollama\models"
     start "" /min "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" serve
   ) else (
     echo Ollama executable not found. The window will still open; checks live inside the app.

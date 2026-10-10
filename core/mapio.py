@@ -90,7 +90,8 @@ def archive_applied(output: Path) -> int:
     moved = 0
     for row in done:
         old = (row.get("Текущий путь") or "").replace("\\", "/")
-        new = f"{(row.get('Целевой путь') or '').strip('/')}/{row.get('Новое имя') or ''}".strip("/")
+        parent = (row.get("Целевой путь") or "").strip("/") or old.rpartition("/")[0]
+        new = f"{parent}/{row.get('Новое имя') or ''}".strip("/")
         record = dict(row)
         record["Текущий путь"] = new or old
         record["Применить"] = "FALSE"

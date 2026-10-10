@@ -304,6 +304,59 @@ def source_hint(rel_path: str) -> str:
     return "Текущее место (только подсказка, не доказательство): " + " / ".join(useful[-3:]) + "\n"
 
 
+def _balanced_object(raw: str) -> str:
+    """Первый сбалансированный {...} с учётом строк и экранировений; '' если нет."""
+    start = raw.find("{")
+    while start >= 0:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(raw)):
+            ch = raw[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return raw[start:i + 1]
+        if depth > 0:
+            return raw[start:]      # обрубленный хвост — отдаём как есть, починим ниже
+        start = raw.find("{", start + 1)
+    return ""
+
+
+def _repair_truncated(frag: str) -> str:
+    """Дописать закрытия для JSON, обрезанный num_predict."""
+    stack, in_str, esc = [], False, False
+    for ch in frag:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+    out = frag.rstrip().rstrip(",")
+    if in_str:
+        out += '"'
+    out += "".join("}" if c == "{" else "]" for c in reversed(stack))
+    return out
+
+
 def parse_answer(text: str) -> dict:
     raw = (text or "").strip()
     if not raw:
@@ -315,6 +368,13 @@ def parse_answer(text: str) -> dict:
     brace = re.search(r"\{.*\}", raw, re.DOTALL)
     if brace:
         candidates.append(brace.group(0))
+    balanced = _balanced_object(raw)
+    if balanced:
+        candidates.append(balanced)
+        if balanced.rstrip() != balanced or not balanced.rstrip().endswith("}"):
+            candidates.append(_repair_truncated(balanced))
+    elif raw.count("{") > raw.count("}"):
+        candidates.append(_repair_truncated(raw[raw.find("{"):]))
     for cand in candidates:
         try:
             data = json.loads(cand)
