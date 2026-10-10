@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import tkinter as tk
@@ -228,12 +229,24 @@ class FoldersWindow(tk.Toplevel):
         head.pack(fill="x")
         T.Pill(head, I.tr("опросить модель по всем папкам зоны"), command=self.run_navigator,
                style="accent").pack(side="left")
+        T.Pill(head, I.tr("⏱ замерить скорость (текст + фото)"), command=self.run_speed_probe,
+               style="ghost").pack(side="left", padx=6)
+        self.probe_label = tk.Label(head, text="", bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9))
+        self.probe_label.pack(side="left")
         tk.Label(head, text="отдельный контекстный проход: имена папок и файлов; текст читается "
                             "только при коллизии одноимённых мест; план — folder_plan.json",
                  bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9), wraplength=780,
                  justify="left").pack(side="left", padx=8)
         plan = folder_router.load_plan_safe(self.config)
         for entry in plan:
+            try:
+                snap_for_stats = json.loads((Path(self.config["output_path"]) / "snapshot.json").read_text("utf-8"))
+                st = folders_ops.folder_stats(snap_for_stats, entry["откуда"])
+                est = folders_ops.estimate(st, folders_ops.load_probe(self.config))
+                stat_line = (f"файлов: {st['всего']} (текст {st['текст']} · картинки {st['картинки']})"
+                             + (f" · {est}" if est else ""))
+            except Exception:
+                stat_line = ""
             if entry.get("section"):
                 text = f"{entry['откуда']}  →  {entry['section']}/"
             elif entry.get("split"):
@@ -241,6 +254,8 @@ class FoldersWindow(tk.Toplevel):
             else:
                 text = f"{entry['откуда']}  →  места нет ({entry.get('note') or entry.get('reason') or '?'})"
             text += f"   · {entry.get('confidence', 0)} · {str(entry.get('reason', ''))[:90]}"
+            if stat_line:
+                text += "\n   " + stat_line
             if entry.get("решение"):
                 text += f"   ✔ {entry['решение']}"
             row = tk.Frame(card, bg=T.CARD_SOFT)
@@ -333,6 +348,18 @@ class FoldersWindow(tk.Toplevel):
         self.status.configure(text=f"создано папок: {made}")
         folders_ops.invalidate_index_cache()
         self.refresh_all()
+
+    def run_speed_probe(self) -> None:
+        def work():
+            return folders_ops.measure_speed(self.config, log=self.log)
+        def done(res):
+            if res.get("t_текст") or res.get("t_картинка"):
+                self.probe_label.configure(
+                    text=f"замер: текст {res.get('t_текст', '—')}с · картинка {res.get('t_картинка', '—')}с")
+                self.refresh_all()
+            else:
+                self.status.configure(text="не удалось замерить (нет читаемых файлов?)")
+        self._run_bg(work, done)
 
     # служебное ────────────────────────────────────────────────────────────
     def _new_batch(self, kind: str) -> str:

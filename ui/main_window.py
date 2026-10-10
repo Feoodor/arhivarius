@@ -273,6 +273,8 @@ class OrganizerApp(tk.Tk):
         T.fade_in(page.body, T.ACCENT_SOFT, T.BG_TOP)
 
     def _card(self, parent, title: str = "", tone: str = T.CARD) -> tk.Frame:
+        from ui import i18n as _I
+        title = _I.tr(title)
         card = T.Card(parent, padding=14, tone=tone)
         card.pack(fill="x", pady=(0, 12))
         card.inner.pack(fill="x")
@@ -447,6 +449,7 @@ class OrganizerApp(tk.Tk):
         cards = tk.Frame(parent, bg=T.BG_TOP)
         cards.pack(fill="x")
         self.cards: dict[str, tk.Label] = {}
+        from ui import i18n as _I
         for name in ("Файлов", "Папок", "К разбору", "На проверке", "Отмечено", "В истории"):
             card = T.Card(cards, padding=12)
             card.pack(side="left", fill="x", expand=True, padx=(0, 10))
@@ -454,7 +457,7 @@ class OrganizerApp(tk.Tk):
             inner.pack(fill="x")
             value = tk.Label(inner, text="—", bg=T.CARD, fg=T.INK, font=("Segoe UI Semibold", 22))
             value.pack(anchor="w")
-            tk.Label(inner, text=name, bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10)).pack(anchor="w")
+            tk.Label(inner, text=_I.tr(name), bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10)).pack(anchor="w")
             self.cards[name] = value
 
         mode_card = self._card(parent, "Режим работы")
@@ -948,7 +951,7 @@ class OrganizerApp(tk.Tk):
                        variable=self.svars["rules_first"]).pack(fill="x", pady=(4, 1))
         self._entry_field(block, "Модель эмбеддингов Ollama (поиск папок по смыслу; пусто = выкл)",
                           self.svars["embed_model"],
-                          "например snowflake-arctic-embed:224m — ставится через `ollama pull`; "
+                          "лучше всего bge-m3 (мультиязычная, сильна на русском): `ollama pull bge-m3`; "
                           "векторы папок кэшируются рядом с программой")
         self._spin_field(block, "Порог автодоверия", self.svars["confidence"], 0.5, 1.0, 0.05)
         self._spin_field(block, "Порог уверенности в имени", self.svars["conf_name"], 0.5, 1.0, 0.05)
@@ -974,6 +977,8 @@ class OrganizerApp(tk.Tk):
             self.svars[key].trace_add("write", self._update_context_line)
 
     def _entry_field(self, parent, label: str, variable, note: str = "") -> None:
+        from ui import i18n as _I
+        label = _I.tr(label)
         tk.Label(parent, text=label, bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10)).pack(anchor="w", pady=(8, 2))
         tk.Entry(parent, textvariable=variable, bg=T.CARD_SOFT, fg=T.INK, relief="flat",
                  highlightthickness=1, highlightbackground=T.BORDER, highlightcolor=T.ACCENT,
@@ -983,6 +988,8 @@ class OrganizerApp(tk.Tk):
                      wraplength=760, justify="left").pack(anchor="w")
 
     def _field_with_browse(self, parent, label: str, variable) -> None:
+        from ui import i18n as _I
+        label = _I.tr(label)
         row = tk.Frame(parent, bg=T.CARD)
         row.pack(fill="x", pady=3)
         tk.Label(row, text=label, bg=T.CARD, fg=T.MUTED, width=26, anchor="w",
@@ -993,6 +1000,8 @@ class OrganizerApp(tk.Tk):
         T.Pill(row, "…", command=lambda: self.pick(variable), style="ghost", width=48).pack(side="left", padx=(6, 0))
 
     def _spin_field(self, parent, label: str, variable, low, high, step, note: str = "") -> None:
+        from ui import i18n as _I
+        label = _I.tr(label)
         row = tk.Frame(parent, bg=T.CARD)
         row.pack(fill="x", pady=3)
         tk.Label(row, text=label, bg=T.CARD, fg=T.MUTED, width=26, anchor="w",
@@ -1003,6 +1012,8 @@ class OrganizerApp(tk.Tk):
                      wraplength=560, justify="left").pack(side="left", padx=8)
 
     def _combo_field(self, parent, label: str, variable, values, readonly: bool = False, note: str = "") -> None:
+        from ui import i18n as _I
+        label = _I.tr(label)
         row = tk.Frame(parent, bg=T.CARD)
         row.pack(fill="x", pady=3)
         tk.Label(row, text=label, bg=T.CARD, fg=T.MUTED, width=26, anchor="w",
@@ -2257,6 +2268,7 @@ class OrganizerApp(tk.Tk):
                      f"{int((total // 1024) + 1) * 1024}")))
 
     def save_settings(self) -> None:
+        old_lang = str(self.config.get("ui_lang", "ru"))
         try:
             roots = [r.strip() for r in self.svars["roots"].get().split(";") if r.strip()]
             if roots:
@@ -2312,8 +2324,23 @@ class OrganizerApp(tk.Tk):
                 self.append_log("внимание: " + problem, "note")
             self.append_log("настройки сохранены", "ok")
             self.refresh_all()
+            if code != old_lang:
+                if messagebox.askyesno(
+                        "Язык интерфейса",
+                        "Новый язык применится после перезапуска.\nПерезапустить программу сейчас?"):
+                    self.restart_app()
         except Exception as exc:
             messagebox.showerror("Настройки", f"{type(exc).__name__}: {exc}")
+
+    def restart_app(self) -> None:
+        import subprocess
+        import sys
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable] + sys.argv[1:])
+        else:
+            subprocess.Popen([sys.executable,
+                              str(Path(__file__).resolve().parent.parent / "app.py")])
+        self.destroy()
 
     def run_doctor(self) -> None:
         import app as cli

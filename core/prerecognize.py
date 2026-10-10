@@ -83,8 +83,26 @@ def deterministic(item: dict, index, config: dict) -> dict | None:
         if all(w in low_name for w in words):
             hits.append((len(words), path))
     if hits:
+        # нюансы «от кого/кому» и номера Вх/Исх — дело модели: письмо при упоминании
+        # события всё равно письмо
+        if re.search(r"(вх|исх)[-_ ]?\d", low_name) or " от " in low_name or " кому" in low_name:
+            return None
         hits.sort(key=lambda t: (-t[0], t[1]))
         target = hits[0][1]
+        # год в имени файла: если внутри папки есть подпапка с этим годом — целимся в неё
+        m_year = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", name)
+        if m_year:
+            year = m_year.group(0)
+            kid = target + "/" + year
+            kid_fold = kid.casefold().replace("ё", "е")
+            match = next((p for p in index.by_path
+                          if p.casefold().replace("ё", "е") == kid_fold), "")
+            if not match:  # может, год живёт в названии подпапки («2026-07_Летний_слёт»)
+                pref = kid_fold + "_"
+                cands = [pp for pp in index.by_path if pp.casefold().replace("ё", "е").startswith(pref)]
+                match = cands[0] if len(cands) == 1 else ""
+            if match:
+                target = match
         if target != parent:
             return {**base, "new_name": name, "target_path": target,
                     "reason": "правило: имя файла называет существующую папку «"

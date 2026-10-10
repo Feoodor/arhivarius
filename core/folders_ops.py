@@ -389,3 +389,99 @@ def taxonomy_hints(config, min_count: int = 3) -> list[dict]:
         tally[key] = tally.get(key, 0) + 1
     return [{"родитель": par, "имя": name, "сколько": n}
             for (par, name), n in sorted(tally.items()) if n >= min_count]
+
+
+# ------------------------------------------------- статистика и прогноз
+TEXT_EXT = {".docx", ".doc", ".pdf", ".rtf", ".odt", ".txt", ".md", ".xlsx", ".xls",
+            ".pptx", ".csv", ".tsv", ".html", ".htm", ".xml", ".msg"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic"}
+
+
+def folder_stats(snapshot: dict, folder_rel: str) -> dict:
+    """Сколько в ветке файлов: текст и картинки отдельно (для прогноза времени)."""
+    pre = folder_rel.rstrip("/") + "/"
+    text = images = other = 0
+    for item in snapshot.get("files", []):
+        p = str(item.get("path", "")).replace("\\", "/")
+        if not p.startswith(pre):
+            continue
+        ext = "." + p.rpartition(".")[2].lower()
+        if ext in TEXT_EXT:
+            text += 1
+        elif ext in IMAGE_EXT:
+            images += 1
+        else:
+            other += 1
+    return {"текст": text, "картинки": images, "прочее": other,
+            "всего": text + images + other}
+
+
+PROBE_NAME = "speed_probe.json"
+
+
+def load_probe(config) -> dict:
+    try:
+        return json.loads((config["output_path"] / PROBE_NAME).read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def measure_speed(config, log=None) -> dict:
+    """По одному реальному файлу текста и картинки — секунды на разбор каждого.
+
+    Это калибровка прогноза: партия из N текстовых и M картинок займёт примерно
+    N·t_текст + M·t_картинка. Два запроса к модели ~1–2 минуты (с прогревом)."""
+    import time as _time
+    from . import pipeline
+    log = log or (lambda m: None)
+    snapshot, index = pipeline._snapshot_and_index(config)
+    an = pipeline.Analyzer(config, snapshot, index, log=log)
+    an.preflight()
+    hidden = [str(h).strip("/").casefold() for h in config.get("folders", {}).get("hide_prefixes", [])]
+    text_file = image_file = None
+    for item in snapshot.get("files", []):
+        p = str(item.get("path", "")).replace("\\", "/")
+        ext = "." + p.rpartition(".")[2].lower()
+        if any(p.casefold().startswith(h + "/") for h in hidden):
+            continue
+        if text_file is None and ext in {".docx", ".pdf", ".txt", ".md"} and (config["scan_root"] / p).exists():
+            text_file = item
+        if image_file is None and ext in {".jpg", ".jpeg", ".png"} and (config["scan_root"] / p).exists():
+            image_file = item
+        if text_file and image_file:
+            break
+    out: dict = {"дата": datetime.now().isoformat(timespec="seconds")}
+    if text_file:
+        t0 = _time.monotonic()
+        an.process_one(text_file)
+        out["t_текст"] = round(_time.monotonic() - t0, 1)
+        log(f"  замер текст: {out['t_текст']}с ({str(text_file['path']).rpartition('/')[2][:40]})")
+    if image_file:
+        t0 = _time.monotonic()
+        an.process_one(image_file)
+        out["t_картинка"] = round(_time.monotonic() - t0, 1)
+        log(f"  замер картинка: {out['t_картинка']}с ({str(image_file['path']).rpartition('/')[2][:40]})")
+    if len(out) > 1:
+        try:
+            (config["output_path"] / PROBE_NAME).write_text(
+                json.dumps(out, ensure_ascii=False, indent=2), "utf-8")
+        except OSError:
+            pass
+    return out
+
+
+def estimate(stats: dict, probe: dict) -> str:
+    """«≈ 12 мин» по статистике папки и калибровке; '' если калибровки нет."""
+    if not probe:
+        return ""
+    tt = float(probe.get("t_текст") or 0)
+    ti = float(probe.get("t_картинка") or 0)
+    secs = stats.get("текст", 0) * tt + stats.get("картинки", 0) * ti
+    if secs <= 0:
+        return ""
+    mins = secs / 60
+    if mins < 1:
+        return f"≈ {int(secs)} с"
+    if mins < 60:
+        return f"≈ {round(mins)} мин"
+    return f"≈ {mins/60:.1f} ч"

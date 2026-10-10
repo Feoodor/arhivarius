@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+from ui import i18n as _I
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -256,6 +258,7 @@ class Pill(tk.Canvas):
 
     def __init__(self, master, text: str, command=None, style: str = "ghost", width: int = 0,
                  icon: str = "", enabled: bool = True, **kw):
+        text = _I.tr(text)
         super().__init__(master, highlightthickness=0, bd=0, **kw)
         self.command, self.text, self.icon = command, text, icon
         self.enabled = enabled
@@ -331,6 +334,7 @@ class Segmented(tk.Canvas):
     """Сегментированный переключатель с плавно скользящим индикатором."""
 
     def __init__(self, master, options: tuple[str, ...], command=None, **kw):
+        options = tuple(_I.tr(x) for x in options)
         super().__init__(master, highlightthickness=0, bd=0, height=40, **kw)
         self.options, self.command = list(options), command
         self.selected = 0
@@ -498,6 +502,7 @@ class TabBar(tk.Frame):
     """Верхняя навигация: пилюли с эмодзи и плавной сменой страниц."""
 
     def __init__(self, master, pages: list[tuple[str, str]], command, **kw):
+        pages = [(k, _I.tr(title)) for k, title in pages]
         super().__init__(master, bg=kw.pop("bg", BG_TOP), **kw)
         self.pages, self.command = pages, command
         self.pills: dict[str, Pill] = {}
