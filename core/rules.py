@@ -534,6 +534,15 @@ def build_record(
     target = canonicalize_target(target, config, verdict)
     target = resolve_path(target, index, verdict)
     check_non_event_folder(target, config, verdict)
+    # нестыковка года: целевая папка названа годом, а документ датирован другим
+    doc_year = (doc_date or "")[:4]
+    years_ok = {y for y in (doc_year, (event_start or "")[:4]) if y}
+    if years_ok and target:
+        for seg in target.split("/"):
+            m_year = re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", seg)
+            if m_year and m_year.group(0) not in years_ok:
+                verdict.flag(f"папка «{seg}» про {m_year.group(0)}, а документ датирован {doc_date} — год не совпадает")
+                break
     if target:
         parts = [p for p in target.split("/") if p]
         prefixes = ["/".join(parts[: i + 1]) for i in range(len(parts))]
