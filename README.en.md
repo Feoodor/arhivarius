@@ -8,7 +8,9 @@ a name following your own naming convention and a destination inside your folder
 and moves only what a human approves. No clouds, no API keys: files, maps and decisions
 stay on your computer.
 
-Other languages: [Русский](README.md) · [Download .exe](https://github.com/Feoodor/arhivarius/releases/latest)
+Other languages: [![Download .exe](https://img.shields.io/github/v/release/Feoodor/arhivarius?label=Download%20.exe&color=brightgreen)](https://github.com/Feoodor/arhivarius/releases/latest) [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
+[Русский](README.md) · [Download .exe](https://github.com/Feoodor/arhivarius/releases/latest)
 
 ## What it is for
 
