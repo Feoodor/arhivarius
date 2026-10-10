@@ -7,7 +7,8 @@
 и место в вашей структуре папок, а переносит только то, что утвердил человек.
 Никаких облаков и API-ключей: файл, карта и решения остаются на вашем компьютере.
 
-English: [README.en.md](README.en.md) · [Скачать .exe](https://github.com/Feoodor/arhivarius/releases/latest)
+[![Скачать .exe](https://img.shields.io/github/v/release/Feoodor/arhivarius?label=%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20.exe&color=brightgreen)](https://github.com/Feoodor/arhivarius/releases/latest) [![Лицензия](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
 
 ## Для чего
 
