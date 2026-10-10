@@ -19,3 +19,12 @@ dist*/
 *.exe
 .venv/
 venv/
+
+# личные эталоны и рабочие данные
+etalon.json
+similar_photos.csv
+fewshot.json
+embed_cache.json
+folder_plan.json
+folder_keep.json
+folder_ops.csv

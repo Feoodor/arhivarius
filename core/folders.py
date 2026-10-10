@@ -272,6 +272,7 @@ class FolderIndex:
         show_files: bool = True,
         hide_garbled: bool = True,
         respect_exclude: bool = True,
+        boost: list[str] | None = None,
     ) -> ContextPack:
         """Собрать срез структуры для одного файла.
 
@@ -316,6 +317,11 @@ class FolderIndex:
                     if parent:
                         for child in parent.children.values():
                             add_subtree(child.path, sib)
+            for bp in (boost or [])[:20]:
+                node = self.by_path.get(bp)
+                if node is not None and not (respect_exclude and self.excluded(bp)):
+                    add_chain(bp)
+                    add_subtree(bp, 2)
             if use_search and keywords:
                 hits = 0
                 for path in sorted(

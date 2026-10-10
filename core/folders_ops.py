@@ -359,3 +359,33 @@ def load_plan(config: dict) -> list[dict]:
 def save_plan(config: dict, rows: list[dict]) -> None:
     (config["output_path"] / PLAN_NAME).write_text(
         json.dumps(rows, ensure_ascii=False, indent=2), "utf-8")
+
+
+# ------------------------------------------------- подсказки таксономии
+def taxonomy_hints(config, min_count: int = 3) -> list[dict]:
+    """Папки, которые модель просит создать снова и снова (≥min_count раз).
+
+    Если несколько разных файлов просят одну и ту же новую папку под одним
+    родителем — это не выдумка, а недостающий раздел структуры. Предлагаем
+    создать её один раз (mkdir, без переносов)."""
+    import json as _json
+    import re as _re
+    src = config["output_path"] / "suggestions.json"
+    try:
+        rows = _json.loads(src.read_text("utf-8"))
+    except Exception:
+        return []
+    pat = _re.compile(r"создаётся одна новая папка «(.+?)»")
+    tally: dict[tuple[str, str], int] = {}
+    for row in rows:
+        m = pat.search(str(row.get("_исправления") or ""))
+        if not m:
+            continue
+        target = str(row.get("Целевой путь") or "")
+        parent = target.rpartition("/")[0]
+        if not parent:
+            continue
+        key = (parent, m.group(1))
+        tally[key] = tally.get(key, 0) + 1
+    return [{"родитель": par, "имя": name, "сколько": n}
+            for (par, name), n in sorted(tally.items()) if n >= min_count]

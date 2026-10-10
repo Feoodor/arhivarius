@@ -96,6 +96,8 @@ class OrganizerApp(tk.Tk):
     def __init__(self, config: dict):
         super().__init__()
         self.config = config
+        from ui import i18n as I
+        I.set_lang(str(config.get("ui_lang", "ru")))
         self.title("Архивариус")
         try:
             icon = Path(__file__).resolve().parent.parent / "logo.png"
@@ -222,7 +224,8 @@ class OrganizerApp(tk.Tk):
         T.Pill(header, "Открыть результаты", command=lambda: open_path(self.config["output_path"]),
                style="ghost", icon="📂").pack(side="right")
 
-        self.tabbar = T.TabBar(self, PAGES, command=self._show_page, bg=T.BG_TOP)
+        from ui import i18n as I
+        self.tabbar = T.TabBar(self, [(k, I.tr(title)) for k, title in PAGES], command=self._show_page, bg=T.BG_TOP)
         self.tabbar.place(x=24, y=108, relwidth=1, width=-48, height=44)
 
         self.container = tk.Frame(self, bg=T.BG_TOP)
@@ -814,6 +817,7 @@ class OrganizerApp(tk.Tk):
         bar = tk.Frame(parent, bg=T.BG_TOP)
         bar.pack(fill="x", pady=(10, 0))
         T.Pill(bar, "Дубликаты", command=self.start_duplicates, style="ghost").pack(side="left")
+        T.Pill(bar, "Похожие фото", command=self.start_photo_dupes, style="ghost").pack(side="left", padx=6)
         T.Pill(bar, "Битые файлы", command=self.run_broken, style="ghost").pack(side="left", padx=6)
         T.Pill(bar, "Старые форматы: список", command=lambda: self.run_convert(False), style="ghost").pack(side="left")
         T.Pill(bar, "Старые: конвертировать", command=lambda: self.run_convert(True), style="good").pack(side="left", padx=6)
@@ -853,6 +857,9 @@ class OrganizerApp(tk.Tk):
             "conf_move": tk.DoubleVar(value=float(self.config["thresholds"].get("min_move_confidence", self.config["thresholds"]["min_confidence"]))),
             "new_folder_cap": tk.DoubleVar(value=float(self.config["thresholds"].get("new_folder_max_confidence", 0.8))),
             "cache": tk.StringVar(value=str(llm["cache_policy"])),
+            "ui_lang": tk.StringVar(value=str(self.config.get("ui_lang", "ru"))),
+            "embed_model": tk.StringVar(value=str(llm.get("embed_model", ""))),
+            "rules_first": tk.BooleanVar(value=bool(self.config.get("queue", {}).get("rules_first", True))),
             "hide_prefixes": tk.StringVar(value="; ".join(folders.get("hide_prefixes", []))),
             "vision": tk.BooleanVar(value=bool(llm.get("vision", True))),
             "ocr": tk.BooleanVar(value=bool(self.config.get("plugins", {}).get("ocr"))),
@@ -931,6 +938,18 @@ class OrganizerApp(tk.Tk):
                        "на файл (примерно вдвое дольше, качество раскладки выше)")) .pack(anchor="w")
 
         block = self._card(parent, "⚖️ Решения и возможности")
+        from ui import i18n as _I
+        self._combo_field(block, "Язык интерфейса (после перезапуска)", self.svars["ui_lang"],
+                          tuple(_I.LANGS.values()), readonly=True,
+                          note="ключи словаря — русские строки; дополнять переводы можно в ui/i18n.py")
+        tk.Checkbutton(block, text="правила раньше модели: однозначные случаи решаются без запроса (быстрее и стабильнее)",
+                       bg=T.CARD, fg=T.INK, activebackground=T.CARD, selectcolor=T.CARD_SOFT,
+                       anchor="w", font=("Segoe UI", 10),
+                       variable=self.svars["rules_first"]).pack(fill="x", pady=(4, 1))
+        self._entry_field(block, "Модель эмбеддингов Ollama (поиск папок по смыслу; пусто = выкл)",
+                          self.svars["embed_model"],
+                          "например snowflake-arctic-embed:224m — ставится через `ollama pull`; "
+                          "векторы папок кэшируются рядом с программой")
         self._spin_field(block, "Порог автодоверия", self.svars["confidence"], 0.5, 1.0, 0.05)
         self._spin_field(block, "Порог уверенности в имени", self.svars["conf_name"], 0.5, 1.0, 0.05)
         self._spin_field(block, "Порог уверенности в переносе", self.svars["conf_move"], 0.5, 1.0, 0.05)
@@ -1187,6 +1206,14 @@ class OrganizerApp(tk.Tk):
 
     def start_duplicates(self) -> None:
         self.run_worker("Дубликаты", lambda: scanner.duplicates_report(self.config))
+
+    def start_photo_dupes(self) -> None:
+        def work():
+            from core import photodupes
+            rows = photodupes.find_similar(self.config)
+            path = photodupes.save_report(self.config, rows)
+            return {"групп": len(rows), "отчёт": path.name}
+        self.run_worker("Похожие фото", work)
 
     def start_analyze(self) -> None:
         if not self.snapshot or not self.index:
@@ -2261,6 +2288,12 @@ class OrganizerApp(tk.Tk):
                 "hierarchical": bool(self.svars["hierarchical"].get()),
                 "hide_prefixes": [p.strip() for p in self.svars["hide_prefixes"].get().split(";") if p.strip()],
             })
+            lang_name = self.svars["ui_lang"].get()
+            from ui import i18n as _I
+            code = next((c for c, n in _I.LANGS.items() if n == lang_name), "ru")
+            self.config["ui_lang"] = code
+            llm["embed_model"] = self.svars["embed_model"].get().strip()
+            self.config.setdefault("queue", {})["rules_first"] = bool(self.svars["rules_first"].get())
             self.config["thresholds"]["min_confidence"] = float(self.svars["confidence"].get())
             self.config["thresholds"]["min_name_confidence"] = float(self.svars["conf_name"].get())
             self.config["thresholds"]["min_move_confidence"] = float(self.svars["conf_move"].get())

@@ -10,10 +10,11 @@ from __future__ import annotations
 import threading
 import time
 import tkinter as tk
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tkinter import messagebox
 
 from core import folders_ops, folder_router
+from ui import i18n as I
 from ui import theme as T
 
 
@@ -22,7 +23,7 @@ class FoldersWindow(tk.Toplevel):
         super().__init__(master)
         self.config = config
         self.log = log or (lambda m: None)
-        self.title("Папки · пустые, двойники, навигатор зоны разбора")
+        self.title(I.tr("Папки · пустые, двойники, навигатор зоны разбора"))
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{min(1180, sw - 80)}x{min(760, sh - 100)}")
         self.minsize(860, 540)
@@ -37,8 +38,8 @@ class FoldersWindow(tk.Toplevel):
     def _build(self) -> None:
         bar = tk.Frame(self, bg=T.BG_TOP)
         bar.pack(fill="x", padx=14, pady=(10, 4))
-        T.Pill(bar, "↻ обновить всё", command=self.refresh_all, style="ghost").pack(side="left")
-        T.Pill(bar, "Откатить последнюю пачку", command=self.undo_last, style="ghost").pack(side="left", padx=6)
+        T.Pill(bar, I.tr("↻ обновить всё"), command=self.refresh_all, style="ghost").pack(side="left")
+        T.Pill(bar, I.tr("Откатить последнюю пачку"), command=self.undo_last, style="ghost").pack(side="left", padx=6)
         T.Pill(bar, "Журнал folder_ops.csv",
                command=lambda: self._open_file(self.config["output_path"] / folders_ops.JOURNAL_NAME),
                style="ghost").pack(side="left")
@@ -97,10 +98,11 @@ class FoldersWindow(tk.Toplevel):
         self._build_empties()
         self._build_merges()
         self._build_navigator()
+        self._build_taxonomy()
 
     # пустые ───────────────────────────────────────────────────────────────
     def _build_empties(self) -> None:
-        card = self._card("🧹 Пустые папки")
+        card = self._card(I.tr("🧹 Пустые папки"))
         try:
             candidates, kept = folders_ops.find_empty_folders(self.config)
         except OSError as exc:
@@ -127,7 +129,7 @@ class FoldersWindow(tk.Toplevel):
         foot = tk.Frame(card, bg=T.CARD)
         foot.pack(fill="x", pady=(6, 2))
         if self._empty:
-            T.Pill(foot, "🗑 убрать помеченные в корзину Windows", command=self.apply_empties,
+            T.Pill(foot, I.tr("🗑 убрать помеченные в корзину Windows"), command=self.apply_empties,
                    style="accent").pack(side="left")
         tk.Label(foot, text=("из корзины восстанавливаются штатно; файлов это не касается"
                              if self._empty else "пустых папок нет 🎉"),
@@ -159,7 +161,7 @@ class FoldersWindow(tk.Toplevel):
     # слияния ──────────────────────────────────────────────────────────────
     def _build_merges(self) -> None:
         from core import pipeline
-        card = self._card("🧲 Одноимённые папки — слить в канон")
+        card = self._card(I.tr("🧲 Одноимённые папки — слить в канон"))
         try:
             _snap, index = pipeline._snapshot_and_index(self.config)
             groups = folders_ops.find_merge_groups(self.config, index)
@@ -194,7 +196,7 @@ class FoldersWindow(tk.Toplevel):
         else:
             foot = tk.Frame(card, bg=T.CARD)
             foot.pack(fill="x", pady=(6, 2))
-            T.Pill(foot, "▶ слить помеченные", command=self.apply_merges, style="accent").pack(side="left")
+            T.Pill(foot, I.tr("▶ слить помеченные"), command=self.apply_merges, style="accent").pack(side="left")
             tk.Label(foot, text="содержимое дублей переезжает в канон; файлы не удаляются, "
                                 "осиротевшие оболочки попадут в список пустых выше",
                      bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9)).pack(side="left", padx=8)
@@ -221,10 +223,10 @@ class FoldersWindow(tk.Toplevel):
 
     # навигатор ────────────────────────────────────────────────────────────
     def _build_navigator(self) -> None:
-        card = self._card("🧭 Папки из «Разобрать» → постоянное место")
+        card = self._card(I.tr("🧭 Папки из «Разобрать» → постоянное место"))
         head = tk.Frame(card, bg=T.CARD)
         head.pack(fill="x")
-        T.Pill(head, "опросить модель по всем папкам зоны", command=self.run_navigator,
+        T.Pill(head, I.tr("опросить модель по всем папкам зоны"), command=self.run_navigator,
                style="accent").pack(side="left")
         tk.Label(head, text="отдельный контекстный проход: имена папок и файлов; текст читается "
                             "только при коллизии одноимённых мест; план — folder_plan.json",
@@ -253,7 +255,7 @@ class FoldersWindow(tk.Toplevel):
         if any(e.get("section") for e in plan):
             foot = tk.Frame(card, bg=T.CARD)
             foot.pack(fill="x", pady=(6, 2))
-            T.Pill(foot, "▶ перенести помеченные целиком", command=self.apply_navigator,
+            T.Pill(foot, I.tr("▶ перенести помеченные целиком"), command=self.apply_navigator,
                    style="accent").pack(side="left")
 
     def run_navigator(self) -> None:
@@ -293,6 +295,43 @@ class FoldersWindow(tk.Toplevel):
         folder_router.save_plan(self.config, list(by_src.values()))
         folders_ops.invalidate_index_cache()
         self.status.configure(text=f"перенесено {ok}, ошибок {fail}")
+        self.refresh_all()
+
+    # подсказки структуры ────────────────────────────────────────────────
+    def _build_taxonomy(self) -> None:
+        hints = folders_ops.taxonomy_hints(self.config)
+        if not hints:
+            return
+        card = self._card(I.tr("🌱 Недостающие папки (модель просит их снова и снова)"))
+        for h in hints:
+            row = tk.Frame(card, bg=T.CARD_SOFT)
+            row.pack(fill="x", pady=2, padx=4)
+            tk.Label(row, text=f"{h['родитель']}/{h['имя']}/   ·  {h['сколько']}×",
+                     bg=T.CARD_SOFT, fg=T.INK, font=("Segoe UI", 10), anchor="w").pack(
+                side="left", fill="x", expand=True)
+        foot = tk.Frame(card, bg=T.CARD)
+        foot.pack(fill="x", pady=(6, 2))
+        T.Pill(foot, I.tr("▶ создать эти папки (только mkdir)"), command=self.apply_taxonomy,
+               style="good").pack(side="left")
+
+    def apply_taxonomy(self) -> None:
+        hints = folders_ops.taxonomy_hints(self.config)
+        if not hints:
+            return
+        if not messagebox.askyesno("Таксономия", f"Создать {len(hints)} новых папок? Только mkdir, "
+                                                 "переносов не будет."):
+            return
+        root = Path(str(self.config["scan_root"]))
+        made = 0
+        for h in hints:
+            target = root / PurePosixPath(f"{h['родитель']}/{h['имя']}")
+            if not target.exists():
+                target.mkdir(parents=True, exist_ok=True)
+                folders_ops.log_op(self.config, "mkdir", "", f"{h['родитель']}/{h['имя']}",
+                                   "таксономия", "ok")
+                made += 1
+        self.status.configure(text=f"создано папок: {made}")
+        folders_ops.invalidate_index_cache()
         self.refresh_all()
 
     # служебное ────────────────────────────────────────────────────────────

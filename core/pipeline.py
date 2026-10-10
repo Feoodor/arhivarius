@@ -118,6 +118,13 @@ class Analyzer:
         self._last_sec_conf = 0.0
         self._hash_seen: dict[str, dict] = {}
         self._placed: dict[str, str] = {}
+        self.rules_first = bool(config.get("queue", {}).get("rules_first", True))
+        self._hist_hashes = self._history_answers()
+        try:
+            from . import fewshot
+            fewshot.refresh(config)
+        except Exception:
+            pass
         self.content_chars = int(llm_cfg.get("content_chars", 3200))
         self.vision_max_side = int(llm_cfg.get("vision_max_side", 1024))
         self.ocr_enabled = bool(config.get("plugins", {}).get("ocr"))
@@ -131,6 +138,38 @@ class Analyzer:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------ setup
+    def _history_answers(self) -> dict[str, dict]:
+        """sha256 → ответ, восстановленный из прошлых записей suggestions.json."""
+        out: dict[str, dict] = {}
+        target = self.output / "suggestions.json"
+        try:
+            rows = json.loads(target.read_text("utf-8")) if target.exists() else []
+        except Exception:
+            return out
+        for row in rows:
+            digest = str(row.get("_хеш") or "")
+            if not digest or row.get("_окончено") is False:
+                continue
+            ev = str(row.get("_дата-события") or "")
+            start, _, end = ev.partition("…")
+            out[digest] = {
+                "doc_type": str(row.get("_тип_документа") or ""),
+                "direction": str(row.get("_направление") or ""),
+                "reg_number": str(row.get("_номер") or ""),
+                "doc_date": str(row.get("_дата") or ""),
+                "event_name": str(row.get("_событие") or ""),
+                "event_start": start, "event_end": end,
+                "new_name": str(row.get("Новое имя") or ""),
+                "target_path": str(row.get("Целевой путь") or ""),
+                "shortcut_to": str(row.get("Путь ярлыка") or ""),
+                "name_confidence": float(row.get("Уверенность имени") or 0),
+                "move_confidence": float(row.get("Уверенность переноса") or 0),
+                "confidence": 0, "review": str(row.get("Статус")) == "проверка",
+                "discard": bool(row.get("_выбросить")),
+                "discard_reason": "", "reason": str(row.get("Причина") or "")[:300],
+            }
+        return out
+
     def _duplicate_map(self) -> dict[str, list[str]]:
         groups: dict[str, list[str]] = {}
         for item in self.snapshot.get("files", []):
@@ -397,6 +436,18 @@ class Analyzer:
         rel = str(item.get("path", "")).replace("\\", "/")
         full = self.root / Path(rel)
         started = time.monotonic()
+        digest = str(item.get("sha256") or "")
+        if self.rules_first:
+            from . import prerecognize
+            ans = prerecognize.deterministic(item, self.index, self.config)
+            source = "правило"
+            if ans is None and digest and digest in self._hist_hashes:
+                ans = dict(self._hist_hashes[digest])
+                ans["reason"] = ("тот же хеш, что в прежнем разборе: "
+                                 + (ans.get("reason") or ""))[:280]
+                source = "хеш из карты"
+            if ans is not None:
+                return self._rule_record(item, ans, source)
         extracted = extract_mod.extract(
             full, self.content_chars, int(self.config.get("llm", {}).get("max_pdf_pages", 12)),
             ocr=self.ocr_enabled, media_meta=self.media_meta,
@@ -435,15 +486,31 @@ class Analyzer:
                 usage["seconds"] = round(usage["seconds"] + sec_secs, 1)
                 usage["prompt_tokens"] = max(usage["prompt_tokens"], sec_tok)
 
+            boost: list[str] = []
+            try:
+                from . import embeds
+                if embeds.enabled(self.config):
+                    boost = embeds.rank_folders(self.config, self.index,
+                                                f"{Path(rel).name} {extracted.text[:600]}", k=20)
+            except Exception:
+                pass
+
             def build_pack(budget: int):
                 if sections:
                     return self.index.subtree_pack(sections, depth=self.hier_subtree_depth,
                                                    budget_chars=budget, anchor=anchor)
                 return self.index.build(anchor=anchor, keywords=keywords, skeleton_depth=self.depth,
                                         anchor_depth=self.depth, max_paths=self.max_paths,
-                                        budget_chars=budget)
+                                        budget_chars=budget, boost=boost)
 
             hint2 = " ".join(s for s in (proj_hint, section_note) if s)
+            try:
+                from . import fewshot
+                fs = fewshot.hints(self.config, rel, extracted.text)
+                if fs:
+                    hint2 = (hint2 + "\n" if hint2 else "") + fs
+            except Exception:
+                pass
             for attempt in range(attempts):
                 pack = build_pack(req_budget)
                 content, pack, fit_note = self._fit(extracted.text, pack, anchor, keywords,
@@ -517,6 +584,31 @@ class Analyzer:
         if digest and answer:
             self._hash_seen[digest] = {"rel": rel, "answer": answer, "extracted": extracted}
         self._dump_raw(rel, answer, error, usage, extracted, verdict)
+        return record
+
+    def _rule_record(self, item: dict, answer: dict, source: str) -> dict:
+        """Запись без обращения к модели: правило или хеш из прошлой карты."""
+        rel = str(item.get("path", "")).replace("\\", "/")
+        dup = [p for p in self.duplicates.get(str(item.get("sha256") or ""), []) if p != rel]
+        if source == "хеш из карты":
+            extracted = extract_mod.extract(self.root / Path(rel), self.content_chars, 4,
+                                            ocr=False, media_meta=False)
+        else:
+            extracted = Extracted(text="", kind="правило")
+        usage = {"prompt_tokens": 0, "seconds": 0, "model": source}
+        verdict = build_record(item, extracted, answer, self.index, self.config,
+                               self.root, dup, usage)
+        record = verdict.record
+        record["_блокировок"] = ""
+        record["_контекст"] = f"без запроса: {source}"
+        record["_ошибка"] = ""
+        record["_окончено"] = True
+        record["_время_запроса"] = 0.0
+        digest = str(item.get("sha256") or "")
+        if digest:
+            self._hash_seen[digest] = {"rel": rel, "answer": answer, "extracted": extracted}
+        self._dump_raw(rel, answer, "", usage, extracted, verdict)
+        self.log(f"  {source}, без модели: {record['Целевой путь'] or '?'}/{record['Новое имя'] or '?'}")
         return record
 
     # --------------------------------------------------- двухпроходный выбор раздела

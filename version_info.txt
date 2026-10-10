@@ -16,8 +16,8 @@ VSVersionInfo(
   kids=[
     StringFileInfo([
       StringTable('040904B0', [
-        StringStruct('CompanyName',      'Фёдор Москальчук'),
-        StringStruct('FileDescription',  'Архивариус — разбор архива. Разработан Фёдором Москальчуком'),
+        StringStruct('CompanyName',      'Theosis'),
+        StringStruct('FileDescription',  'Архивариус. Разработан Фёдором Москальчуком'),
         StringStruct('FileVersion',      '1.0.0'),
         StringStruct('InternalName',     'Архивариус'),
         StringStruct('LegalCopyright',   '© 2026 Фёдор Москальчук'),
