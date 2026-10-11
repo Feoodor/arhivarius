@@ -62,10 +62,8 @@ def refine(config: dict, rel_path: str, previous: dict | None = None,
     images = _maybe_image(config, rel, None)
     # Картинку/PDF-скан отдаём vision-модели на её (меньшем) окне; иначе — текстовой.
     if images:
-        model = llm_cfg.get("model_vision", llm_cfg.get("model_text", "gemma3:12b"))
         eff_ctx = min(int(llm_cfg.get("num_ctx", 16384)), int(llm_cfg.get("vision_num_ctx", 16384)))
     else:
-        model = llm_cfg.get("model_text", "gemma3:12b")
         eff_ctx = int(llm_cfg.get("num_ctx", 16384))
 
     # Безопасный бюджет карты: сколько влезает вместе с инструкцией и текстом файла

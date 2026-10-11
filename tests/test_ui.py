@@ -9,15 +9,16 @@ import unittest
 from pathlib import Path
 from tkinter import ttk
 
+from ui import input as uinput          # сам модуль дисплея не требует: логика сочетаний клавиш тестируется и без него
+
 try:
     _probe = tk.Tk()
     _probe.destroy()
     HAVE_DISPLAY = True
-except Exception:          # нет tkinter / DISPLAY
+except Exception:          # нет DISPLAY
     HAVE_DISPLAY = False
 
 if HAVE_DISPLAY:
-    from ui import input as uinput
     from ui import theme as T
 
 

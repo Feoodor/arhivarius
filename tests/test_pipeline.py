@@ -11,7 +11,7 @@ from core import mapio
 from core.llm import ModelMissing, OllamaUnavailable
 from core.pipeline import Analyzer, Filters
 from tests.fake_ollama import FakeOllama
-from tests.helpers import department_responder, make_archive, scan_and_index
+from tests.helpers import department_responder, hier_responder, make_archive, scan_and_index
 
 
 def build(tmp, server, files=None, **llm):
@@ -47,6 +47,53 @@ class HappyPath(unittest.TestCase):
             analyzer, config, _ = build(tmp, server)
             analyzer.run(Filters(limit=10))
             self.assertEqual(analyzer.queue(Filters(limit=10)), [])
+
+
+class TwoPass(unittest.TestCase):
+    """Двухпроходный режим (теперь по умолчанию): раздел по enum реальных путей → точная папка."""
+
+    def build(self, tmp, server, **kw):
+        config, root = make_archive(Path(tmp), None, {"base_url": server.url})
+        config["folders"]["hierarchical"] = True
+        snapshot, index = scan_and_index(config)
+        logs: list[str] = []
+        return Analyzer(config, snapshot, index, log=logs.append), logs
+
+    def test_two_requests_per_file_and_same_answers(self):
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=hier_responder) as server:
+            analyzer, logs = self.build(tmp, server)
+            records = analyzer.run(Filters(limit=10))
+            by_name = {r["Текущее имя"]: r for r in records}
+            self.assertEqual(by_name["scan001.txt"]["Целевой путь"], "Документы/Входящие/2026")
+            self.assertEqual(by_name["doc2.txt"]["Целевой путь"], "Документы/Прошения - Рапорты/2026")
+            self.assertIn("Входящие", by_name["scan001.txt"]["_разделы"])
+            # у каждого файла — запрос на раздел (схема с enum) и запрос на имя/папку
+            kinds = ["section" if "section" in (p.get("format") or {}).get("properties", {}) else "full"
+                     for p in server.chat_payloads]
+            self.assertEqual(kinds.count("section"), kinds.count("full"))
+            self.assertEqual(kinds.count("section"), 3)
+
+    def test_section_enum_contains_only_real_folders_and_hides_intake(self):
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=hier_responder) as server:
+            analyzer, logs = self.build(tmp, server)
+            analyzer.run(Filters(limit=1))
+            first = server.chat_payloads[0]["format"]["properties"]["section"]["enum"]
+            self.assertIn("Документы/Входящие", first)
+            self.assertFalse(any("Разобрать" in e for e in first), "зона разбора не должна быть вариантом раздела")
+
+    def test_model_hallucinating_a_section_falls_back_to_one_pass(self):
+        def liar(payload):
+            fmt = payload.get("format")
+            if isinstance(fmt, dict) and "section" in fmt.get("properties", {}):
+                return {"section": "Выдуманный раздел", "alt_section": "", "confidence": 0.99, "reason": "?"}
+            return department_responder(payload)
+
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=liar) as server:
+            analyzer, logs = self.build(tmp, server)
+            records = analyzer.run(Filters(limit=10))
+            self.assertEqual(len(records), 3)
+            self.assertTrue(all(not r["_ошибка"] for r in records))
+            self.assertTrue(any("вне карты" in m for m in logs))
 
 
 class Failures(unittest.TestCase):

@@ -107,7 +107,6 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
             return 0
 
     names = "\n".join(f"- {p.name} ({_kb(p)} КБ)" for p in files)
-    llm_cfg = config.get("llm", {})
     from .models import prepare
     client = prepare(client_from_config(config, "text", num_predict=2600, temperature=0.15,
                                         cache_policy="none", structured=True, retries=1), log=log)
@@ -177,7 +176,6 @@ def _vision_pass(config: dict, images: list[Path], folders_block: str, log, prog
     """Картинки по одной через зрение модели; возвращает строки карты."""
     from .llm import client_from_config
 
-    llm_cfg = config.get("llm", {})
     from .models import prepare
     client = prepare(client_from_config(config, "vision", num_predict=700, temperature=0.1,
                                         cache_policy="none", structured=True, retries=1),

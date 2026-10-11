@@ -112,6 +112,23 @@ _K = {
 "Имена: применить": ("Names: apply","Імёны: прымяніць","Імена: застосувати","Nazwy: zastosuj","Namen: anwenden","Nombres: aplicar","Noms : appliquer","Nomi: applica","Nomes: aplicar","命名：应用"),
 "🔄 Проверить": ("🔄 Verify","🔄 Праверыць","🔄 Перевірити","🔄 Sprawdź","🔄 Prüfen","🔄 Comprobar","🔄 Vérifier","🔄 Verifica","🔄 Verificar","🔄 检查"),
 "🔎 Проверить промпт": ("🔎 Check prompt","🔎 Праверыць промпт","🔎 Перевірити промпт","🔎 Sprawdź prompt","🔎 Prompt prüfen","🔎 Comprobar prompt","🔎 Vérifier le prompt","🔎 Controlla prompt","🔎 Verificar prompt","🔎 检查提示词"),
+# --- 1.1.0: новые подписи (пока только английский; остальные языки показывают русский)
+"⋯ Ещё": ("⋯ More",),
+"🚚 Применить перенос": ("🚚 Apply move",),
+"📋 Копировать": ("📋 Copy",),
+"📋 Копировать всё": ("📋 Copy all",),
+"Закрыть": ("Close",),
+"Развернуть всё": ("Expand all",),
+"Свернуть": ("Collapse",),
+"🧠 Модели Ollama": ("🧠 Ollama models",),
+"🔄 Проверить Ollama": ("🔄 Check Ollama",),
+"Взять как текстовую": ("Use as text model",),
+"Взять для зрения": ("Use for vision",),
+"✨ Подобрать лучшие": ("✨ Pick the best",),
+"⬇ Скачать модель…": ("⬇ Download model…",),
+"⬇ Скачать": ("⬇ Download",),
+"Смотреть и утвердить": ("Review & approve",),
+"✔ Не трогать": ("✔ Leave as is",),
 "Пуск партии": ("Run batch","Запуск партыі","Запуск партії","Uruchom partię","Stapel starten","Iniciar lote","Lancer le lot","Avvia lotto","Iniciar lote","启动批次"),
 }
 

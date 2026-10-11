@@ -37,6 +37,9 @@ Everything else is a safety net: an operation journal, one-click batch undo, zer
 | ↩️ **Journal & undo** | every applied batch rolls back with one button; files are never deleted |
 | 🌍 **10 UI languages** | English, Русский, Беларуская, Українська, Polski, Deutsch, Español, Français, Italiano, Português, 中文 |
 | 🔌 **LAN** | inference can run against Ollama on another machine in your local network |
+| 🧯 **Ollama without errors** | dropped connections, "server busy", out of VRAM, models without `think` / schema / vision support — the client retries, falls back to a compatible mode and shrinks the window by itself; `gemma3` resolves to `gemma3:latest`; calls to local Ollama bypass the system proxy; if Ollama vanishes mid-batch the run stops cleanly, finished work is kept and the rest is requeued |
+| 🧠 **Model picker** | Settings → Ollama models: what is installed, who can see images, context limit; "Pick the best", "Download model…" with progress; if the configured model is missing, the best installed one is used instead of an error |
+| 📋 **Copy & scroll** | Ctrl+C/V/X/A work on a **Russian** keyboard layout; in tables Ctrl+C copies rows (paste into Excel), right-click copies path/name/folder; the wheel scrolls the table/text first, then the page; dropdowns and spinners never change on page scroll |
 
 ## Quick start
 

@@ -83,3 +83,17 @@ def department_responder(payload: dict) -> dict:
                 "target_path": "Документы/Мероприятия/Слеты/2026/2026-07-17_Летний-слет/06_Участники"}
     return {**base, "new_name": name, "target_path": "Документы/00_Разобрать", "review": True,
             "name_confidence": 0.3, "move_confidence": 0.3}
+
+
+def hier_responder(payload: dict) -> dict:
+    """Как department_responder, но умеет и проход 1 (выбор раздела из enum), и проход 2 (подробный ответ)."""
+    fmt = payload.get("format")
+    props = fmt.get("properties", {}) if isinstance(fmt, dict) else {}
+    if "section" in props:
+        text = payload["messages"][-1]["content"].split("ОБРЫВОК СОДЕРЖИМОГО", 1)[-1].lower()
+        enum = props["section"].get("enum") or []
+        want = ("Входящие" if "вх-123" in text else "Прошения" if "рапорт" in text
+                else "Мероприятия" if ("слёт" in text or "слет" in text) else "")
+        pick = next((e for e in enum if want and want in e), enum[0] if enum else "")
+        return {"section": pick, "alt_section": "", "confidence": 0.9, "reason": "по тексту"}
+    return department_responder(payload)

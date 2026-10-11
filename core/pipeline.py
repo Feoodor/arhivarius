@@ -28,7 +28,7 @@ from .rules import build_record
 
 APP_DIR = Path(__file__).resolve().parent.parent
 
-TEXT_CAPABLE = {".docx", ".xlsx", ".xlsm", ".pptx", ".pdf", ".txt", ".md", ".csv", ".tsv", ".html", ".htm", ".json", ".xml", ".log"}
+TEXT_CAPABLE = {".docx", ".docm", ".rtf", ".odt", ".xlsx", ".xlsm", ".pptx", ".pdf", ".txt", ".md", ".csv", ".tsv", ".html", ".htm", ".json", ".xml", ".log"}
 
 
 @dataclass
