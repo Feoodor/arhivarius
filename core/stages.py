@@ -35,7 +35,7 @@ def _conf(val, default: float = 0.0) -> float:
 def refine_staged(config: dict, rel_path: str, previous: dict | None = None,
                   comment: str = "", log=None) -> dict:
     """Три шага (факты → имя → место). Возвращает тот же dict, что refine.refine()."""
-    from .llm import OllamaClient
+    from .llm import OllamaClient, client_from_config
     from .pipeline import context_pack_for, _snapshot_and_index
     from .prompts import build_system, DOC_TYPES
     from .folders import curated_root_sections
@@ -77,14 +77,13 @@ def refine_staged(config: dict, rel_path: str, previous: dict | None = None,
     content = (data.text or "(текст не извлечён)")[:content_cap]
     filename = Path(rel).name
 
+    from .models import prepare
+    role = "vision" if images else "text"
+
     def client(predict: int) -> OllamaClient:
-        return OllamaClient(
-            base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-            model=model, num_ctx=eff_ctx, num_predict=predict, temperature=0.15,
-            top_p=float(llm_cfg.get("top_p", 0.9)), keep_alive=llm_cfg.get("keep_alive", "30m"),
-            timeout=int(llm_cfg.get("timeout_seconds", 900)),
-            cache_policy=llm_cfg.get("cache_policy", "nonce"), structured=False, retries=1,
-        )
+        return prepare(client_from_config(config, role, num_predict=predict, temperature=0.15,
+                                          structured=False, retries=1),
+                       vision=bool(images), log=log)
 
     def ask_json(predict: int, user: str, imgs=None) -> dict:
         res = client(predict).ask(system, user, images=imgs)

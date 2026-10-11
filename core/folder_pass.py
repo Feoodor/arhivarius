@@ -81,7 +81,7 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
                 log=None, progress=None) -> dict:
     """Один запрос на всю папку (+ зрение по одному на картинку). Возвращает сводку."""
     log = log or (lambda msg: None)
-    from .llm import OllamaClient
+    from .llm import client_from_config
     from .pipeline import _snapshot_and_index
 
     _, index = _snapshot_and_index(config)
@@ -108,18 +108,9 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
 
     names = "\n".join(f"- {p.name} ({_kb(p)} КБ)" for p in files)
     llm_cfg = config.get("llm", {})
-    client = OllamaClient(
-        base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-        model=llm_cfg.get("model_text", "gemma3:12b"),
-        num_ctx=int(llm_cfg.get("num_ctx", 16384)),
-        num_predict=2600,
-        temperature=0.15,
-        keep_alive=llm_cfg.get("keep_alive", "30m"),
-        timeout=int(llm_cfg.get("timeout_seconds", 900)),
-        cache_policy="none",
-        structured=True,
-        retries=1,
-    )
+    from .models import prepare
+    client = prepare(client_from_config(config, "text", num_predict=2600, temperature=0.15,
+                                        cache_policy="none", structured=True, retries=1), log=log)
 
     system = build_system(config) + (
         "\n\nРЕЖИМ «ПАПКА ЦЕЛИКОМ»: тебе показывают ВСЮ папку сразу. Сравни файлы между "
@@ -184,18 +175,13 @@ def folder_pass(config: dict, rel_folder: str, limit: int = 60, vision: bool = F
 
 def _vision_pass(config: dict, images: list[Path], folders_block: str, log, progress) -> list[Path | dict]:
     """Картинки по одной через зрение модели; возвращает строки карты."""
-    from .llm import OllamaClient
+    from .llm import client_from_config
 
     llm_cfg = config.get("llm", {})
-    client = OllamaClient(
-        base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-        model=llm_cfg.get("model_vision", llm_cfg.get("model_text", "gemma3:12b")),
-        num_ctx=int(llm_cfg.get("num_ctx", 16384)),
-        num_predict=700, temperature=0.1,
-        keep_alive=llm_cfg.get("keep_alive", "30m"),
-        timeout=int(llm_cfg.get("timeout_seconds", 900)),
-        cache_policy="none", structured=True, retries=1,
-    )
+    from .models import prepare
+    client = prepare(client_from_config(config, "vision", num_predict=700, temperature=0.1,
+                                        cache_policy="none", structured=True, retries=1),
+                     vision=True, log=log)
     system = build_system(config) + ("\n\nРежим «зрение»: смотришь картинку. new_name — по регламенту, "
                                      "по тому, что видно (баннер события, надпись, люди, храм). Не выдумывай даты.")
     rows = []

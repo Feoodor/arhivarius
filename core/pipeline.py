@@ -20,7 +20,8 @@ from typing import Callable
 from . import extract as extract_mod
 from .extract import Extracted
 from .folders import FolderIndex, keywords_from_text
-from .llm import ContextOverflow, LlmError, OllamaClient, candidate_urls, probe_endpoint
+from .llm import (ContextOverflow, LlmError, LlmTimeout, ModelMissing, OllamaUnavailable,
+                  VisionUnsupported, candidate_urls, client_from_config, probe_endpoint)
 from .prompts import (RESPONSE_SCHEMA, SECTION_SYSTEM, build_section_user, build_system,
                       build_user, section_schema)
 from .rules import build_record
@@ -63,28 +64,17 @@ class Analyzer:
         self.pause_flag = threading.Event()
 
         llm_cfg = config.get("llm", {})
-        shared = dict(
-            base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-            num_ctx=int(llm_cfg.get("num_ctx", 8192)),
-            num_predict=int(llm_cfg.get("num_predict", 420)),
-            temperature=float(llm_cfg.get("temperature", 0.1)),
-            top_p=float(llm_cfg.get("top_p", 0.9)),
-            keep_alive=str(llm_cfg.get("keep_alive", "30m")),
-            timeout=int(llm_cfg.get("timeout_seconds", 600)),
-            cache_policy=llm_cfg.get("cache_policy", "nonce"),
-            structured=bool(llm_cfg.get("structured_output", True)),
-            retries=int(llm_cfg.get("retries", 2)),
-            enable_thinking=bool(llm_cfg.get("enable_thinking", False)),
-        )
-        self.client = OllamaClient(model=llm_cfg.get("model_text", "gemma3:12b"), **shared)
+        self.client = client_from_config(config, "text")
+        self.client.log = self.log
         self.vision_enabled = bool(llm_cfg.get("vision", False))
         if self.vision_enabled:
-            vis_ctx = min(int(shared["num_ctx"]), int(llm_cfg.get("vision_num_ctx", 16384)))
-            vis_shared = {**shared, "num_ctx": vis_ctx}
-            self.vision_client = OllamaClient(
-                model=llm_cfg.get("model_vision", llm_cfg.get("model_text", "gemma3:12b")), **vis_shared)
+            self.vision_client = client_from_config(config, "vision")
+            self.vision_client.log = self.log
         else:
             self.vision_client = None
+        self._fatal: LlmError | None = None        # Ollama пропала / нет модели — партию дальше гнать нельзя
+        self._down_streak = 0
+        self.stopped_reason = ""
         from . import plugins as _plugins
 
         _plugins.set_config(config)          # явный путь к tesseract из настроек работает везде
@@ -93,7 +83,7 @@ class Analyzer:
         self.system_prompt = build_system(config)
         folders_cfg = config.get("folders", {})
         self.budget_full = int(folders_cfg.get("budget_chars", 7000))
-        self.num_ctx = shared["num_ctx"]
+        self.num_ctx = self.client.num_ctx
         from .config_loader import slice_budget
 
         self.budget_chars = min(self.budget_full, slice_budget(config, len(self.system_prompt)))
@@ -262,7 +252,12 @@ class Analyzer:
                 with map_path.open(encoding="utf-8-sig", newline="") as stream:
                     for row in csv.DictReader(stream, delimiter=";"):
                         if (row.get("Статус") or "").strip() in {"готово", "проверка", "перенесено", "без изменений"}:
-                            paths.setdefault((row.get("Текущий путь") or "").replace("\\", "/"), "")
+                            # строка со сбоем модели и без правок человека — не «разобранная»: её повторим
+                            failed = ("сбой модели" in (row.get("Причина") or "")
+                                      and not (row.get("Комментарий") or "").strip()
+                                      and (row.get("Применить") or "").strip().upper() != "TRUE")
+                            if not failed:
+                                paths.setdefault((row.get("Текущий путь") or "").replace("\\", "/"), "")
             except Exception:
                 pass
         applied = self.output / "migration_map_applied.csv"   # закрытые: перенесённые и «без изменений»
@@ -328,20 +323,44 @@ class Analyzer:
 
     # ------------------------------------------------------------------- loop
     def preflight(self) -> None:
-        clients = [self.client] + ([self.vision_client] if self.vision_client else [])
+        """Проверка перед партией: Ollama жива, модели есть (иначе — замена), окно не больше, чем держит модель."""
+        from . import models as models_mod
+
         url, alive = probe_endpoint(self.client.base_url)
         if not alive:
-            raise LlmError(
+            raise OllamaUnavailable(
                 f"Ollama не отвечает (проверены {', '.join(candidate_urls(self.client.base_url))}). "
-                "Запустите приложение Ollama."
-            )
+                "Запустите приложение Ollama и повторите.")
+        clients = [self.client] + ([self.vision_client] if self.vision_client else [])
         for client in clients:
             client.base_url = url
-        models = self.client.list_models()
-        for client in clients:
-            if client.model not in models:
-                raise LlmError(f"модель {client.model} не найдена. Доступны: {', '.join(models) or 'нет'}")
-        self.log(f"Ollama: {url}; модель {self.client.model}; num_ctx={self.num_ctx}; очистка кэша: {self.client.cache_policy}")
+        want_vision = self.vision_client.model if self.vision_client else ""
+        plan = models_mod.plan_models(self.client, self.client.model, want_vision, self.vision_enabled)
+        for note in plan.notes:
+            self.log("  ВНИМАНИЕ: " + note)
+        if not plan.ok:
+            raise ModelMissing(self.client.model, [d["name"] for d in self.client.list_models_detailed()]) \
+                if not plan.text else LlmError("; ".join(plan.problems))
+        self.client.model = plan.text
+        if self.vision_enabled and plan.vision_enabled and plan.vision:
+            if self.vision_client is None or self.vision_client is self.client:
+                self.vision_client = client_from_config(self.config, "vision")
+                self.vision_client.base_url = url
+                self.vision_client.log = self.log
+            self.vision_client.model = plan.vision
+        elif self.vision_enabled:
+            self.vision_enabled = False
+            self.vision_client = None
+        # окно не должно превышать то, что держит сама модель
+        for client in [self.client] + ([self.vision_client] if self.vision_client else []):
+            limit = client.context_limit(client.model)
+            if limit and client.num_ctx > limit:
+                self.log(f"  num_ctx={client.num_ctx} больше предела модели «{client.model}» ({limit}) — беру {limit}")
+                client.num_ctx = max(4096, limit)
+        self.num_ctx = self.client.num_ctx
+        self.log(f"Ollama: {url}; модель {self.client.model}"
+                 + (f"; зрение: {self.vision_client.model}" if self.vision_client else "; зрение выключено")
+                 + f"; num_ctx={self.num_ctx}; очистка кэша: {self.client.cache_policy}")
         self.log(f"контекст: инструкция ~{estimate_tokens(self.system_prompt)} ток. "
                  f"({len(self.system_prompt)} симв.), карта ≤{self.budget_chars} симв. "
                  f"(~{estimate_tokens(' ' * self.budget_chars)} ток.), файл ≤{self.content_chars} симв., "
@@ -381,6 +400,11 @@ class Analyzer:
             self.records.append(record)
             self._persist()
             self.on_record and self.on_record(record)
+            if self._fatal is not None:
+                self.stopped_reason = str(self._fatal)
+                self.log(f"ОСТАНОВЛЕНО: {self.stopped_reason}. Уже разобранное сохранено; "
+                         "остальные файлы вернутся в очередь при следующем запуске.")
+                break
             self.log(f"[{position}/{total}] {rel} → {record['Целевой путь'] or '?'}/{record['Новое имя'] or '?'} "
                      f"({'копия по хешу' if inherited else ('проверка' if record['Статус'] == 'проверка' else 'готово')}, "
                      f"{record['_время_запроса']}с)")
@@ -479,10 +503,14 @@ class Analyzer:
             proj = _routing.project_homes(rel, self.index, self.config.get("top_level_roots", []), self.config)
             proj_hint = _routing.hint_text(proj, self.config)
             if self.hier:
-                sections, section_note, sec_secs, sec_tok = self._choose_sections(
-                    rel, extracted, images, proj_hint, anchor, req_ctx, req_budget)
-                usage["seconds"] = round(usage["seconds"] + sec_secs, 1)
-                usage["prompt_tokens"] = max(usage["prompt_tokens"], sec_tok)
+                try:
+                    sections, section_note, sec_secs, sec_tok = self._choose_sections(
+                        rel, extracted, images, proj_hint, anchor, req_ctx, req_budget)
+                    usage["seconds"] = round(usage["seconds"] + sec_secs, 1)
+                    usage["prompt_tokens"] = max(usage["prompt_tokens"], sec_tok)
+                except (OllamaUnavailable, ModelMissing) as exc:
+                    error = str(exc)
+                    self._register_failure(exc)
 
             boost: list[str] = []
             try:
@@ -509,7 +537,11 @@ class Analyzer:
                     hint2 = (hint2 + "\n" if hint2 else "") + fs
             except Exception:
                 pass
-            for attempt in range(attempts):
+            for attempt in range(attempts if not error else 0):
+                # окно могло уменьшиться после нехватки памяти — карта строится под актуальное
+                req_ctx = int(getattr(client, "num_ctx", req_ctx))
+                req_budget = max(self.budget_floor, min(
+                    req_budget, int(max(0, (req_ctx - _used) * CHARS_PER_TOKEN))))
                 pack = build_pack(req_budget)
                 content, pack, fit_note = self._fit(extracted.text, pack, anchor, keywords,
                                                     ceiling_ctx=req_ctx, rebuild=build_pack)
@@ -533,8 +565,11 @@ class Analyzer:
                     result = client.ask(self.system_prompt, user, RESPONSE_SCHEMA, images=images or None)
                     answer = result.data
                     error = ""   # предыдущая попытка могла быть overflow — успех её аннулирует
+                    self._down_streak = 0
                     usage = {"prompt_tokens": result.prompt_tokens, "seconds": round(usage["seconds"] + (result.seconds or 0), 1),
                              "model": result.model}
+                    for note in result.notes:
+                        self.log("  " + note)
                     self._adapt(result.prompt_tokens, False)
                     if result.prompt_tokens >= req_ctx * 0.995:
                         self.log(f"  ВНИМАНИЕ: промпт упёрся в окно {req_ctx} ток. ({result.prompt_tokens}) — "
@@ -546,13 +581,33 @@ class Analyzer:
                     break
                 except ContextOverflow as exc:
                     error = f"контекст переполнен: {exc}"
+                    if exc.new_ctx:
+                        self.num_ctx = min(self.num_ctx, exc.new_ctx)
+                        self.log(f"  памяти не хватило — окно теперь {exc.new_ctx} ток.")
                     if images:
                         req_budget = max(self.budget_floor, int(req_budget * 0.7))
                     else:
                         self._adapt(int(req_ctx * 0.95), True)
                         # иначе следующая попытка соберёт ровно тот же перерост:
                         req_budget = max(self.budget_floor, min(req_budget, self.budget_chars))
-                    self.log(f"  HTTP 500 → сжимаем срез папок, попытка {attempt + 1}/{attempts}")
+                    self.log(f"  контекст тесен → сжимаем срез папок, попытка {attempt + 1}/{attempts}")
+                except VisionUnsupported as exc:
+                    # модель не приняла картинку: разбираем по имени и пути, строка уйдёт на проверку
+                    self.log(f"  модель не приняла изображение ({str(exc)[:80]}) — разбираю без него")
+                    images = []
+                    client = self.client
+                    answer = {}
+                    if not extracted.usable:
+                        error = "модель не читает картинки — нужен просмотр глазами"
+                        break
+                    error = ""
+                except (OllamaUnavailable, ModelMissing) as exc:
+                    error = str(exc)
+                    self._register_failure(exc)
+                    break
+                except LlmTimeout as exc:
+                    error = str(exc)
+                    break
                 except LlmError as exc:
                     error = str(exc)
                     break
@@ -577,7 +632,7 @@ class Analyzer:
         if error:
             record["Статус"] = "проверка"
             record["Причина"] = (record["Причина"] + " | " if record["Причина"] else "") + f"сбой модели: {error[:180]}"
-        record["_окончено"] = not error or "переполнен" not in error
+        record["_окончено"] = not error      # сбой модели → файл вернётся в очередь
         record["_время_запроса"] = record["_время_запроса"] or round(time.monotonic() - started, 1)
         if sections:
             record["_разделы"] = " → ".join(sections)
@@ -586,6 +641,15 @@ class Analyzer:
             self._hash_seen[digest] = {"rel": rel, "answer": answer, "extracted": extracted}
         self._dump_raw(rel, answer, error, usage, extracted, verdict)
         return record
+
+    def _register_failure(self, exc: LlmError) -> None:
+        """Ollama пропала или модели нет: после второго подряд сбоя партию надо остановить."""
+        if isinstance(exc, ModelMissing):
+            self._fatal = exc
+            return
+        self._down_streak += 1
+        if self._down_streak >= 2:
+            self._fatal = exc
 
     def _rule_record(self, item: dict, answer: dict, source: str) -> dict:
         """Запись без обращения к модели: правило или хеш из прошлой карты."""

@@ -156,6 +156,19 @@ def _auto(row: dict) -> bool:
     return bool(row.get("Целевой путь") and row.get("Новое имя")) and str(row.get("Тип операции")) != "без изменений"
 
 
+def is_touched(row: dict) -> bool:
+    """Строку правил(а) человек: комментарий, ярлык, отметка «Применить»=TRUE или решение по ней.
+
+    «Применить»=FALSE — просто состояние по умолчанию, это не правка: иначе
+    повторный разбор («разобрать заново», перезапуск после сбоя) не обновлял бы
+    ни одной строки карты."""
+    if (row.get("Комментарий") or "").strip() or (row.get("Путь ярлыка") or "").strip():
+        return True
+    if (row.get("Применить") or "").strip().upper() == "TRUE":
+        return True
+    return (row.get("Статус") or "").strip() in {"перенесено", "отказ", "без изменений"}
+
+
 def merge_suggestions(
     map_rows: list[dict],
     records: list[dict],
@@ -176,7 +189,7 @@ def merge_suggestions(
             index[key] = new_row
             added += 1
             continue
-        touched = any(old.get(field) for field in HUMAN_FIELDS) or old.get("Статус") in {"перенесено", "отказ"}
+        touched = is_touched(old)
         if touched and not overwrite:
             skipped += 1
             continue

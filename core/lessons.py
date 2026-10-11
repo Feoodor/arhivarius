@@ -110,7 +110,7 @@ def collect(config: dict) -> list[dict]:
 def distill(config: dict, log=None) -> str:
     """Собрать уроки → попросить модель сформулировать правила → дописать в learned_rules.md."""
     log = log or (lambda msg: None)
-    from .llm import OllamaClient
+    from .llm import client_from_config
     from .prompts import parse_answer
 
     feedback = collect(config)
@@ -121,19 +121,9 @@ def distill(config: dict, log=None) -> str:
     (config["output_path"] / FEEDBACK_NAME).write_text(
         json.dumps(feedback, ensure_ascii=False, indent=2), "utf-8")
 
-    llm_cfg = config.get("llm", {})
-    client = OllamaClient(
-        base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-        model=llm_cfg.get("model_text", "gemma3:12b"),
-        num_ctx=int(llm_cfg.get("num_ctx", 16384)),
-        num_predict=1400,
-        temperature=0.3,
-        keep_alive=llm_cfg.get("keep_alive", "30m"),
-        timeout=int(llm_cfg.get("timeout_seconds", 900)),
-        cache_policy="none",
-        structured=False,
-        retries=1,
-    )
+    from .models import prepare
+    client = prepare(client_from_config(config, "text", num_predict=1400, temperature=0.3,
+                                        cache_policy="none", structured=False, retries=1), log=log)
     # слишком длинный список режем по концам: важнее всего свежие случаи
     chunk = feedback[-40:]
     user = ("Вот примеры проверок (JSON):\n" + json.dumps(chunk, ensure_ascii=False) +

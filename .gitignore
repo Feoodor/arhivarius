@@ -28,3 +28,7 @@ embed_cache.json
 folder_plan.json
 folder_keep.json
 folder_ops.csv
+
+# служебное
+*.whl
+.pytest_cache/

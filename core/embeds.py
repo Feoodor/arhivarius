@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import math
-import urllib.request
 
 CACHE_NAME = "embed_cache.json"
 
@@ -22,15 +21,14 @@ def enabled(config) -> bool:
 
 
 def _embed_batch(config, texts: list[str]) -> list[list[float]]:
-    url = config["llm"]["base_url"].rstrip("/") + "/api/embed"
-    payload = {"model": config["llm"]["embed_model"], "input": texts}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode())
+    """Эмбеддинги пачки строк. Любой сбой — LlmError (вызывающий код его переживает)."""
+    from .llm import LlmError, client_from_config
+
+    client = client_from_config(config, "text", model=str(config["llm"]["embed_model"]).strip())
+    data = client._post("/api/embed", {"model": client.model, "input": texts}, timeout=120)
     embs = data.get("embeddings") or []
     if len(embs) != len(texts):
-        raise RuntimeError("эмбеддинги вернулись не по числу строк")
+        raise LlmError("эмбеддинги вернулись не по числу строк")
     return embs
 
 
