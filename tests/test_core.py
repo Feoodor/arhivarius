@@ -323,6 +323,15 @@ class Apply(unittest.TestCase):
         self.assertEqual(result["ошибок"], 0)
         self.assertIn("A.txt", [p.name for p in self.src.iterdir()])
 
+    def test_safe_target_keeps_requested_case(self):
+        """Регресс (Windows): resolve() подменял регистр имени на дисковый → «a.txt»→«A.txt» давало «a_v2.txt»."""
+        (self.src / "a.txt").write_text("x", "utf-8")
+        target = applier._safe_target(self.root, "Документы/00_Разобрать/A.txt")
+        self.assertEqual(target.name, "A.txt")
+        for bad in ("../x.txt", "Документы/..", "Документы/00_Разобрать/.."):
+            with self.assertRaises(ValueError):
+                applier._safe_target(self.root, bad)
+
     def test_journal_lets_undo_work_even_after_a_crash(self):
         """Журнал отката пишется по ходу дела: падение посреди пачки не оставляет файлы без записи."""
         rows = [self.row("a.txt", "1.txt"), self.row("b.txt", "2.txt")]

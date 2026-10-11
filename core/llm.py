@@ -139,7 +139,8 @@ def candidate_urls(base_url: str = "") -> list[str]:
     add(base_url)
     add(os.environ.get("OLLAMA_HOST", ""))
     add("http://127.0.0.1:11434")
-    add("http://localhost:11434")
+    if "http://127.0.0.1:11434" not in urls:        # «localhost» — тот же адрес; лишняя проба на Windows ~2 с
+        add("http://localhost:11434")
     return urls
 
 

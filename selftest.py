@@ -20,6 +20,9 @@ if str(ROOT) not in sys.path:
 
 
 def main(argv: list[str]) -> int:
+    for stream in (sys.stdout, sys.stderr):              # Windows при перенаправлении: cp1252 не знает кириллицу
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     verbosity = 2 if "-v" in argv else 1
     pattern = ""
     if "-k" in argv and argv.index("-k") + 1 < len(argv):

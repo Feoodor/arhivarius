@@ -44,9 +44,16 @@ class Action:
 
 
 def _safe_target(root: Path, rel: str) -> Path:
-    """Относительный путь → абсолютный, с проверкой, что мы не ушли из корня."""
+    """Относительный путь → абсолютный, с проверкой, что мы не ушли из корня.
+
+    Разрешаем (resolve) только ПАПКУ, а имя файла оставляем как просили: на Windows resolve()
+    подставляет регистр имени с диска, и переименование «a.txt» → «A.txt» превращалось
+    в «a_v2.txt» (цель считалась занятой самим файлом)."""
     rel = (rel or "").replace("\\", "/").strip("/")
-    candidate = (root / rel).resolve()
+    full = root / rel
+    if full.name in ("", ".", ".."):
+        raise ValueError(f"путь вне рабочего каталога: {rel}")
+    candidate = full.parent.resolve() / full.name
     try:
         candidate.relative_to(root.resolve())
     except ValueError as exc:

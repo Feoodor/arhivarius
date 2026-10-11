@@ -32,6 +32,20 @@ class Ev:
         self.widget, self.keysym, self.keycode, self.state = widget, keysym, keycode, state
 
 
+def destroy_clean(root) -> None:
+    """Закрыть окно, отменив отложенные вызовы: иначе на Windows они срабатывают в следующем окне
+    теста и печатают «invalid command name» (на работу программы это не влияет)."""
+    try:
+        for after_id in root.tk.splitlist(root.tk.call("after", "info")):
+            try:
+                root.tk.call("after", "cancel", after_id)       # напрямую: after_cancel() падает на служебных вызовах Tk
+            except tk.TclError:
+                pass
+    except tk.TclError:
+        pass
+    root.destroy()
+
+
 def pump(root, seconds: float = 0.05) -> None:
     end = time.time() + seconds
     while time.time() < end:
@@ -49,7 +63,7 @@ class Base(unittest.TestCase):
         self.root.update()
 
     def tearDown(self):
-        self.root.destroy()
+        destroy_clean(self.root)
 
     def press(self, widget, keysym: str, ctrl: bool = True):
         widget.focus_force()
@@ -361,7 +375,7 @@ class MainWindow(unittest.TestCase):
                 self.assertLess(app.ollama_label.winfo_rooty() + app.ollama_label.winfo_height(),
                                 app.ollama_label.master.master.winfo_rooty() + 200)
             finally:
-                app.destroy()
+                destroy_clean(app)
 
     def test_shortcuts_work_in_real_window(self):
         from tests.fake_ollama import FakeOllama
@@ -384,7 +398,7 @@ class MainWindow(unittest.TestCase):
                 uinput.handle_key(Ev(app.log_text, "Cyrillic_es"))             # Ctrl+С = копировать
                 self.assertIn("строка журнала для копирования", app.clipboard_get())
             finally:
-                app.destroy()
+                destroy_clean(app)
 
 
 @unittest.skipUnless(HAVE_DISPLAY, "нет дисплея: запустите через xvfb-run")
@@ -419,7 +433,7 @@ class Viewer(unittest.TestCase):
                                              viewer.winfo_width() + 1, widget.text)
                 viewer.destroy()
         finally:
-            root.destroy()
+            destroy_clean(root)
 
 
 def _walk(widget):
