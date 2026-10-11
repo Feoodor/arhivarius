@@ -127,6 +127,16 @@ def _clean_base(value: str) -> str:
     return f"{scheme}://{shown}" + (f":{port}" if port else "") + parsed.path.rstrip("/")
 
 
+def _is_loopback_url(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def candidate_urls(base_url: str = "") -> list[str]:
     """Где может висеть Ollama: настройка, переменная OLLAMA_HOST, локальные адреса."""
     urls: list[str] = []
@@ -137,6 +147,9 @@ def candidate_urls(base_url: str = "") -> list[str]:
             urls.append(cleaned)
 
     add(base_url)
+    first = urls[0] if urls else ""
+    if first and not _is_loopback_url(first):
+        return urls                       # адрес удалённого ПК с видеокартой задан явно — на другую машину не уходим
     add(os.environ.get("OLLAMA_HOST", ""))
     add("http://127.0.0.1:11434")
     if "http://127.0.0.1:11434" not in urls:        # «localhost» — тот же адрес; лишняя проба на Windows ~2 с
@@ -210,11 +223,10 @@ def _error_text(exc: urllib.error.HTTPError) -> str:
     return raw or str(exc.reason or "")
 
 
-_MEMORY_HINTS = ("more system memory", "out of memory", "oom", "cuda error", "cudamalloc",
+_MEMORY_HINTS = ("more system memory", "out of memory", "cuda error", "cudamalloc",
                  "failed to allocate", "unable to allocate", "insufficient memory",
                  "memory layout", "not enough memory", "vram", "ggml_backend",
-                 "runner process has terminated", "runner terminated", "llama runner",
-                 "exit status", "model requires more")
+                 "runner process has terminated", "runner terminated", "model requires more")
 _CONTEXT_HINTS = ("context length", "context window", "exceeds", "too long", "increase context",
                   "please increase", "maximum context", "input length", "too many tokens",
                   "prompt is too long", "too many images")
@@ -391,7 +403,7 @@ class OllamaClient:
 
         Сеть повторяется здесь (обрыв, перегрузка); смысловые ошибки (контекст,
         формат, отсутствие модели) вызывающий код разбирает сам по типу."""
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8", errors="replace")
         last: LlmError | None = None
         attempts = (2 if retry else 0) + 1
         for attempt in range(attempts):
@@ -439,6 +451,11 @@ class OllamaClient:
         raise last or LlmError("неизвестная сетевая ошибка")
 
     def _classify(self, code: int, detail: str, retry_after: str | None = None) -> LlmError:
+        error = self._classify_text(code, detail, retry_after)
+        error.http = True            # type: ignore[attr-defined]  # ответ сервера, а не наш разбор
+        return error
+
+    def _classify_text(self, code: int, detail: str, retry_after: str | None = None) -> LlmError:
         low = (detail or "").lower()
         text = f"HTTP {code}: {detail or 'ошибка Ollama'}"
         if "model" in low and ("not found" in low or "try pulling" in low) and code in (400, 404, 500):
@@ -484,10 +501,8 @@ class OllamaClient:
             },
         }
         payload["format"] = schema if enforced else "json"
-        if not self.enable_thinking and self._send_think:
-            payload["think"] = False
-        elif self.enable_thinking:
-            payload["think"] = True
+        if self._send_think:
+            payload["think"] = bool(self.enable_thinking)      # False — «не размышляй»; True — если включено в настройках
         return payload
 
     def _shrink_ctx(self, system: str, user: str, images: list[str] | None) -> int:
@@ -518,7 +533,9 @@ class OllamaClient:
             started = time.monotonic()
             try:
                 response = self._post("/api/chat", payload)
-                message = response.get("message") or {}
+                message = response.get("message")
+                if not isinstance(message, dict):
+                    raise LlmError(f"ответ не похож на ответ Ollama: {str(response)[:120]}")
                 raw = message.get("content", "") or ""
                 if not raw.strip() and message.get("thinking"):
                     # модель «думала» вслух и не дошла до ответа: просим без размышлений
@@ -571,14 +588,15 @@ class OllamaClient:
             except LlmError as exc:
                 last_error = exc
                 low = str(exc).lower()
-                if "thinking" in low and self._send_think and "does not support" in low:
+                from_server = getattr(exc, "http", False)
+                if from_server and "thinking" in low and self._send_think and "does not support" in low:
                     self._send_think = False
                     notes.append("модель без режима размышлений — параметр think отключён")
                     if extra_budget > 0:
                         extra_budget -= 1
                         max_attempts += 1
                     continue
-                if self.structured and schema and self._schema_ok and any(
+                if from_server and self.structured and schema and self._schema_ok and any(
                         w in low for w in ("grammar", "schema", "format", "json schema", "unmarshal")):
                     self._schema_ok = False
                     notes.append("схема ответа не принята — перехожу на простой JSON")

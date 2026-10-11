@@ -325,6 +325,29 @@ class Flow(tk.Frame):
         self._width = 0
         self.configure(height=40)
         self.bind("<Configure>", self._on_configure)
+        self._sizes: tuple = ()
+        self._poll_id = self.after(350, self._poll)
+        self.bind("<Destroy>", self._stop_poll, add="+")
+
+    def _stop_poll(self, event=None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        try:
+            self.after_cancel(self._poll_id)
+        except (tk.TclError, ValueError):
+            pass
+
+    def _poll(self) -> None:
+        """Подпись внутри панели сменила текст (статус, прогресс) → её нужная ширина другая: переложить."""
+        try:
+            if self.winfo_ismapped():
+                sizes = tuple((w.winfo_reqwidth(), w.winfo_reqheight()) for w, _n, _s in self._items)
+                if sizes != self._sizes:
+                    self._sizes = sizes
+                    self.relayout()
+            self._poll_id = self.after(350, self._poll)
+        except tk.TclError:
+            pass
 
     def add(self, widget: tk.Widget, newline: bool = False, stretch: bool = False) -> tk.Widget:
         self._items.append((widget, newline, stretch))

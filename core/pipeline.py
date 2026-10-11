@@ -480,6 +480,7 @@ class Analyzer:
         answer: dict = {}
         usage = {"prompt_tokens": 0, "seconds": 0, "model": self.client.model}
         error = ""
+        unreadable = False
         wants_vision = extracted.needs_vision and self.vision_enabled and extracted.kind in ("image", "pdf-scan")
         images = []
         if wants_vision:
@@ -492,6 +493,7 @@ class Analyzer:
         section_note = ""
         if not extracted.usable and not images:
             error = extracted.note or "нечего читать"
+            unreadable = True        # файл не читается — это решение (на проверку), а не сбой: повторять бессмысленно
         else:
             client = self.vision_client if images else self.client
             req_ctx = int(getattr(client, "num_ctx", self.num_ctx))
@@ -615,6 +617,8 @@ class Analyzer:
                     error = f"{type(exc).__name__}: {exc}"
                     break
 
+        if not answer and not error:
+            error = "модель не вернула ответ"
         verdict = build_record(item, extracted, answer, self.index, self.config, self.root, duplicates, usage)
         record = verdict.record
         if sections and record.get("Целевой путь"):
@@ -631,8 +635,10 @@ class Analyzer:
         record["_ошибка"] = error[:300]
         if error:
             record["Статус"] = "проверка"
-            record["Причина"] = (record["Причина"] + " | " if record["Причина"] else "") + f"сбой модели: {error[:180]}"
-        record["_окончено"] = not error      # сбой модели → файл вернётся в очередь
+            label = "не прочитан" if unreadable else "сбой модели"
+            record["Причина"] = (record["Причина"] + " | " if record["Причина"] else "") + f"{label}: {error[:180]}"
+        # сбой модели → файл вернётся в очередь; нечитаемый файл — окончательно на проверку человеку
+        record["_окончено"] = (not error) or unreadable
         record["_время_запроса"] = record["_время_запроса"] or round(time.monotonic() - started, 1)
         if sections:
             record["_разделы"] = " → ".join(sections)
@@ -757,6 +763,8 @@ class Analyzer:
                 map_budget = max(1500, int(map_budget * 0.6))
                 self.log("  проход «раздел»: контекст тесен — ужимаю скелет")
                 continue
+            except (OllamaUnavailable, ModelMissing):
+                raise                      # process_one остановит партию, а не станет гонять второй цикл повторов
             except Exception as exc:
                 self.log(f"  проход «раздел» сорвался ({type(exc).__name__}: {str(exc)[:120]}) — работаю в один проход")
                 break

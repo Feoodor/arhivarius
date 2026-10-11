@@ -44,6 +44,100 @@ class Decoding(unittest.TestCase):
         self.assertIsInstance(decode_text(bytes(range(256)) * 4), str)
 
 
+class ReviewDecoding(unittest.TestCase):
+    """Находки независимого ревью (чтение текста)."""
+
+    def test_belarusian_and_ukrainian_cp1251(self):
+        be = "Гэта ліст ад 12 сакавіка 2026 года. Запрашаем вас на злёт, дзе будуць ўсе. " * 20
+        uk = "Це лист від 12 березня 2026 року. Запрошуємо вас на зліт, де будуть усі: ґанок, їжак, єнот. " * 20
+        for text in (be, uk):
+            self.assertEqual(decode_text(text.encode("cp1251")), text)
+
+    def test_short_cp1251_file_is_not_clipped(self):
+        """Хвост отбрасывается только у файла, реально обрезанного лимитом чтения."""
+        self.assertEqual(decode_text("ID: 5 по".encode("cp1251")), "ID: 5 по")
+        self.assertEqual(decode_text("ID: 5 по".encode("cp1251"), truncated=False), "ID: 5 по")
+
+    def test_rtf_emoji_and_broken_escapes_never_crash_or_leave_surrogates(self):
+        bs = chr(92)
+        emoji = f"{bs}u-10179?{bs}u-8704?"                        # так Word пишет 😀
+        rtf = ("{" + bs + "rtf1" + bs + "ansi hello " + emoji + " world " + bs + "u99999999? "
+               + bs + "ansicpg10000 " + bs + "'zz " + bs + "\xe9 end}")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "e.rtf"
+            path.write_bytes(rtf.encode("latin-1"))
+            res = extract(path, 3000)
+            self.assertIn("😀", res.text)
+            self.assertIn("world", res.text)
+            res.text.encode("utf-8")                              # не должно быть суррогатов
+
+    def test_docx_self_closing_del_does_not_eat_real_text(self):
+        body = ('<w:p><w:r><w:t>Приказ 5</w:t></w:r></w:p>'
+                '<w:p><w:pPr><w:rPr><w:del w:id="1" w:author="x"/></w:rPr></w:pPr><w:r><w:t>Важный абзац</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Ещё один с датой 12.03.2026.</w:t></w:r></w:p>'
+                '<w:p><w:del w:id="2"><w:r><w:delText>УДАЛЕНО</w:delText></w:r></w:del><w:r><w:t>Конец.</w:t></w:r></w:p>')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "d.docx"
+            make_docx(path, body)
+            got = extract(path, 3000).text
+            for must in ("Приказ 5", "Важный абзац", "Ещё один с датой 12.03.2026", "Конец."):
+                self.assertIn(must, got)
+            self.assertNotIn("УДАЛЕНО", got)
+
+    def test_odt_keeps_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "a.odt"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("content.xml", "<text:p>слово<text:s/>слово</text:p>")
+            self.assertIn("слово слово", extract(path, 3000).text)
+
+
+class ReviewMap(unittest.TestCase):
+    def row(self, path="a.txt", **kw):
+        base = {k: "" for k in mapio.MAP_FIELDS}
+        base.update({"Текущий путь": path, "Применить": "FALSE", "Статус": "проверка"})
+        base.update(kw)
+        return base
+
+    def test_registered_manual_edit_survives_rerun(self):
+        """Человек поправил имя в окне просмотра (без комментария, статус «проверка») — повтор не затирает."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            edited = self.row("a.txt", **{"Новое имя": "моё-имя.txt", "Целевой путь": "Моя/папка"})
+            plain = self.row("b.txt", **{"Новое имя": "старое.txt"})
+            mapio.mark_manual(out, "a.txt")
+            records = [{"Текущий путь": p, "Новое имя": "модель.txt", "Целевой путь": "X", "Статус": "проверка"}
+                       for p in ("a.txt", "b.txt")]
+            rows, added, updated, skipped = mapio.merge_suggestions(
+                [edited, plain], records, manual=mapio.load_manual(out))
+            by = {r["Текущий путь"]: r for r in rows}
+            self.assertEqual(by["a.txt"]["Новое имя"], "моё-имя.txt")
+            self.assertEqual(by["b.txt"]["Новое имя"], "модель.txt")
+            self.assertEqual((updated, skipped), (1, 1))
+
+    def test_manual_registry_roundtrip_and_garbage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.assertEqual(mapio.load_manual(out), set())
+            mapio.mark_manual(out, "x\\y.txt")
+            mapio.mark_manual(out, "x/y.txt")
+            self.assertEqual(mapio.load_manual(out), {"x/y.txt"})
+            (out / mapio.MANUAL_NAME).write_text("{не json", "utf-8")
+            self.assertEqual(mapio.load_manual(out), set())
+
+
+class ReviewModels(unittest.TestCase):
+    def test_pick_best_avoids_tiny_and_code_models(self):
+        from core.models import pick_best
+
+        def lst(*names):
+            return [{"name": n, "size": 5 * 10 ** 9} for n in names]
+
+        self.assertEqual(pick_best(lst("gemma3:1b", "qwen3:14b"), vision=False), "qwen3:14b")
+        self.assertEqual(pick_best(lst("qwen3-coder:30b", "mistral:7b"), vision=False), "mistral:7b")
+        self.assertEqual(pick_best(lst("nomic-embed-text", "bge-m3"), vision=False), "")
+
+
 def make_docx(path: Path, body: str, footer: str = "", extra_document_xml: str = "") -> None:
     ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
     document = f'<w:document {ns}><w:body>{body}{extra_document_xml}</w:body></w:document>'

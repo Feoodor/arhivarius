@@ -280,7 +280,8 @@ def cmd_merge(config: dict) -> int:
         say("  предложений нет — сначала suggest")
         return 1
     rows = mapio.load_map(config["output_path"] / MAP_NAME)
-    rows, added, updated, skipped = mapio.merge_suggestions(rows, records, overwrite=False)
+    rows, added, updated, skipped = mapio.merge_suggestions(
+        rows, records, overwrite=False, manual=mapio.load_manual(config["output_path"]))
     mapio.save_map(config["output_path"] / MAP_NAME, rows)
     stats = mapio.stats(rows)
     say(f"  добавлено {added}, обновлено {updated}, пропущено (ваши правки) {skipped}")

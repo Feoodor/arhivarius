@@ -401,6 +401,48 @@ class MainWindow(unittest.TestCase):
                 destroy_clean(app)
 
 
+class ReviewUi(Base):
+    """Находки независимого ревью (интерфейс)."""
+
+    def test_flow_relays_out_when_a_child_label_changes_text(self):
+        """Статус в панели «Папок» был шириной 4 px и не появлялся при смене текста."""
+        flow = T.Flow(self.root)
+        flow.pack(fill="x")
+        flow.add(T.Pill(flow, "Кнопка"))
+        status = tk.Label(flow, text="")
+        flow.add(status)
+        pump(self.root, 0.3)
+        status.configure(text="перенесено 12, ошибок 0 (пачка слияние-20261011)")
+        pump(self.root, 1.0)
+        self.assertGreaterEqual(status.winfo_width(), status.winfo_reqwidth() - 2,
+                                "подпись не получила нужную ширину после смены текста")
+
+    def test_combobox_popdown_wheel_does_not_raise_and_scrolls(self):
+        errors = []
+        self.root.report_callback_exception = lambda *a: errors.append(a)
+        combo = ttk.Combobox(self.root, values=[f"модель-{i}" for i in range(60)], state="readonly", height=5)
+        combo.pack()
+        pump(self.root, 0.2)
+        self.root.tk.call("ttk::combobox::Post", str(combo))
+        pump(self.root, 0.3)
+        listbox = f"{combo}.popdown.f.l"
+        before = self.root.tk.call(listbox, "yview")
+        self.root.tk.call("event", "generate", listbox, "<MouseWheel>", "-delta", -120)
+        pump(self.root, 0.2)
+        after = self.root.tk.call(listbox, "yview")
+        self.assertEqual(errors, [], "колесо над выпадающим списком вызвало исключение")
+        self.assertNotEqual(before, after, "список не прокрутился")
+        self.root.tk.call("ttk::combobox::Unpost", str(combo))
+
+    def test_select_all_in_browse_tree_is_noop(self):
+        tree = ttk.Treeview(self.root, columns=("a",), show="headings", selectmode="browse")
+        tree.pack()
+        for i in range(3):
+            tree.insert("", "end", iid=str(i), values=(i,))
+        uinput.handle_key(Ev(tree, "Cyrillic_ef"))
+        self.assertEqual(len(tree.selection()), 0)
+
+
 @unittest.skipUnless(HAVE_DISPLAY, "нет дисплея: запустите через xvfb-run")
 class Viewer(unittest.TestCase):
     def test_text_file_content_is_visible_and_copyable(self):

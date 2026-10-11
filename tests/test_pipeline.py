@@ -96,6 +96,55 @@ class TwoPass(unittest.TestCase):
             self.assertTrue(any("вне карты" in m for m in logs))
 
 
+class Unreadable(unittest.TestCase):
+    """Регресс ревью: файл без читаемого содержимого возвращался в очередь навсегда и вытеснял остальные."""
+
+    def test_empty_files_are_closed_once_and_queue_moves_on(self):
+        files = {"a1.txt": "", "a2.txt": "", "z_letter.txt": "Входящее письмо Вх-123 от 12.03.2026."}
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=department_responder) as server:
+            config, root = make_archive(Path(tmp), files, {"base_url": server.url})
+            snapshot, index = scan_and_index(config)
+            seen = []
+            for batch in range(3):
+                analyzer = Analyzer(config, snapshot, index, log=lambda m: None)
+                records = analyzer.run(Filters(limit=2))
+                rows = mapio.load_map(config["output_path"] / "migration_map.csv")
+                rows, *_ = mapio.merge_suggestions(rows, records)
+                mapio.save_map(config["output_path"] / "migration_map.csv", rows)
+                seen.append([r["Текущее имя"] for r in records])
+            self.assertEqual(seen, [["a1.txt", "a2.txt"], ["z_letter.txt"], []])
+            self.assertEqual(len(server.chat_payloads), 1, "модель нужна только письму")
+
+    def test_unreadable_reason_does_not_blame_the_model(self):
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=department_responder) as server:
+            config, root = make_archive(Path(tmp), {"empty.txt": ""}, {"base_url": server.url})
+            snapshot, index = scan_and_index(config)
+            record = Analyzer(config, snapshot, index, log=lambda m: None).run(Filters(limit=5))[0]
+            self.assertIn("не прочитан", record["Причина"])
+            self.assertNotIn("сбой модели", record["Причина"])
+            self.assertEqual(record["Статус"], "проверка")
+            self.assertIs(record["_окончено"], True)
+
+    def test_section_pass_outage_raises_instead_of_double_retry(self):
+        from core.llm import OllamaUnavailable
+
+        with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=hier_responder) as server:
+            config, root = make_archive(Path(tmp), None, {"base_url": server.url})
+            config["folders"]["hierarchical"] = True
+            snapshot, index = scan_and_index(config)
+            analyzer = Analyzer(config, snapshot, index, log=lambda m: None)
+
+            def down(*a, **k):
+                raise OllamaUnavailable("нет связи")
+
+            analyzer.client.ask = down
+            analyzer.vision_client = None
+            items = analyzer.queue(Filters(limit=10))
+            analyzer.process_one(items[0])
+            analyzer.process_one(items[1])
+            self.assertIsInstance(analyzer._fatal, OllamaUnavailable, "партия должна остановиться после второго сбоя")
+
+
 class Failures(unittest.TestCase):
     def test_failed_file_is_requeued_others_survive(self):
         with tempfile.TemporaryDirectory() as tmp, FakeOllama(responder=department_responder) as server:

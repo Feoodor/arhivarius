@@ -1397,7 +1397,8 @@ class OrganizerApp(tk.Tk):
         def work():
             records = self.analyzer.run(filters)
             rows = mapio.load_map(self.config["output_path"] / MAP_NAME)
-            rows, added, updated, skipped = mapio.merge_suggestions(rows, records)
+            rows, added, updated, skipped = mapio.merge_suggestions(
+                rows, records, manual=mapio.load_manual(self.config["output_path"]))
             mapio.save_map(self.config["output_path"] / MAP_NAME, rows)
             return {"разобрано": len(records), "строк в карте": added + updated, "правок не тронуто": skipped}
 
@@ -1589,6 +1590,8 @@ class OrganizerApp(tk.Tk):
                 rows = [row for row in rows if row.get("Статус") != "проверка"]
         for row in rows:
             if row.get("Статус") != "перенесено":
+                if not value and (row.get("Применить") or "").upper() == "TRUE":
+                    mapio.mark_manual(self.config["output_path"], str(row.get("Текущий путь", "")))   # человек снял отметку
                 row["Применить"] = "TRUE" if value else "FALSE"
         self.render_rows()
         self.save_map(silent=True)
@@ -1694,6 +1697,9 @@ class OrganizerApp(tk.Tk):
         row = rows[0]
 
         def after_save(updated: dict) -> None:
+            if any(str(updated.get(k, "")).strip() != str(row.get(k, "")).strip()
+                   for k in ("Новое имя", "Целевой путь", "Путь ярлыка", "Комментарий")):
+                mapio.mark_manual(self.config["output_path"], str(row.get("Текущий путь", "")))   # правка руками
             row.update(updated)
             if (updated.get("Статус") or "").strip() == "без изменений":
                 mapio.archive_manual(self.config["output_path"], row)

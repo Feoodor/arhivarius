@@ -159,6 +159,8 @@ def do_select_all(widget) -> str:
             widget.selection_range(0, "end")
             widget.icursor("end")
         elif cls == "Treeview":
+            if str(widget.cget("selectmode")) == "browse":
+                return "break"                                  # одиночный выбор: выделять всё нельзя
             hook = getattr(widget, "_on_select_all", None)
             if hook:
                 hook()
@@ -305,7 +307,7 @@ def _pointer_widget(event):
         found = event.widget.winfo_containing(event.x_root, event.y_root)
         if found is not None:
             return found
-    except (tk.TclError, KeyError):
+    except (tk.TclError, KeyError, AttributeError):
         pass
     return event.widget
 
@@ -319,9 +321,23 @@ def _on_wheel(event) -> str | None:
         delta = -120
     if not delta:
         return None
+    widget = event.widget
+    if isinstance(widget, str):
+        # выпадающий список Combobox (popdown): виджет создан Tcl, у Python-обёртки его нет — крутим напрямую
+        count = max(1, round(abs(delta) / 120))
+        try:
+            event_root = _ROOT_REF.get("root")
+            if event_root is not None:
+                event_root.tk.call(widget, "yview", "scroll", (-count if delta > 0 else count) * 3, "units")
+        except tk.TclError:
+            pass
+        return "break"
     horizontal = bool(int(getattr(event, "state", 0) or 0) & 0x0001)      # Shift
     route_wheel(_pointer_widget(event), delta, horizontal)
     return "break"          # даже если прокручивать нечего: штатное поведение класса (смена значения) не нужно
+
+
+_ROOT_REF: dict = {}
 
 
 def handle_key(event, kind: str | None = None) -> str | None:
@@ -356,6 +372,7 @@ def install(root: tk.Misc) -> None:
     if getattr(root, "_input_installed", False):
         return
     root._input_installed = True
+    _ROOT_REF["root"] = root
 
     for seq in ("<MouseWheel>", "<Shift-MouseWheel>", "<Button-4>", "<Button-5>"):
         root.bind_all(seq, _on_wheel)

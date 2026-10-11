@@ -29,6 +29,9 @@ FAMILY_RANK = (
 EMBEDDING_MARKERS = ("embed", "bge-", "nomic", "minilm", "mxbai", "e5-", "gte-", "arctic-embed",
                      "granite-embedding", "paraphrase-multilingual", "reranker")
 
+# модели не для документов: код, математика, защитные фильтры
+UNSUITABLE_MARKERS = ("coder", "codellama", "starcoder", "-code", "math", "guard")
+
 # Размер скачанных весов, выше которого модель на обычной видеокарте (12–16 ГБ) уже медленна
 COMFORT_BYTES = 17 * 10 ** 9
 
@@ -49,6 +52,11 @@ RECOMMENDED = (
 def is_embedding(name: str) -> bool:
     low = (name or "").lower()
     return any(marker in low for marker in EMBEDDING_MARKERS)
+
+
+def is_unsuitable(name: str) -> bool:
+    low = (name or "").lower()
+    return is_embedding(low) or any(marker in low for marker in UNSUITABLE_MARKERS)
 
 
 def _param_billions(name: str) -> float:
@@ -76,7 +84,7 @@ def pick_best(installed: list[dict], *, vision: bool, client: OllamaClient | Non
     candidates: list[tuple[tuple, str]] = []
     for item in installed:
         name = str(item.get("name", ""))
-        if not name or is_embedding(name) or any(same_model(name, x) for x in exclude):
+        if not name or is_unsuitable(name) or any(same_model(name, x) for x in exclude):
             continue
         if client is not None:
             caps = client.capabilities(name)
@@ -87,8 +95,10 @@ def pick_best(installed: list[dict], *, vision: bool, client: OllamaClient | Non
             if vision and not caps and _family_rank(name) >= len(FAMILY_RANK):
                 continue                        # о незнакомой модели ничего не известно — не рискуем
         size = int(item.get("size") or 0)
+        params = _param_billions(name)
         comfortable = 0 if (size and size > COMFORT_BYTES) else 1
-        candidates.append(((-comfortable, _family_rank(name), -_param_billions(name), -size), name))
+        tiny = 1 if 0 < params < 3 else 0              # модель на 1–2 млрд хуже любой нормальной, даже из «худшего» семейства
+        candidates.append(((-comfortable, tiny, _family_rank(name), -params, -size), name))
     candidates.sort()
     return candidates[0][1] if candidates else ""
 

@@ -187,6 +187,53 @@ class MemoryPressure(unittest.TestCase):
                 make(s).ask("sys", "user", RESPONSE_SCHEMA)
 
 
+class ReviewFixes(unittest.TestCase):
+    """Находки независимого ревью: каждая закреплена тестом."""
+
+    def test_words_in_model_answer_do_not_disable_the_schema(self):
+        with FakeOllama(responder=lambda p: json.loads(GOOD)) as s:
+            s.script({"content": "Here is the answer in the requested format: the schema is fine"})
+            c = make(s)
+            c.ask("sys", "user", RESPONSE_SCHEMA)
+            self.assertTrue(c._schema_ok, "слова «schema/format» в ТЕКСТЕ ответа не должны выключать грамматику")
+
+    def test_think_never_resent_after_server_refuses_it(self):
+        with FakeOllama(responder=lambda p: json.loads(GOOD)) as s:
+            s.reject_think = True
+            c = make(s, enable_thinking=True)
+            self.assertTrue(c.ask("sys", "user", RESPONSE_SCHEMA).data)
+            self.assertNotIn("think", s.chat_payloads[-1])
+            c.ask("sys", "user", RESPONSE_SCHEMA)
+            self.assertNotIn("think", s.chat_payloads[-1])
+
+    def test_foreign_server_answer_gives_llmerror_not_attributeerror(self):
+        with FakeOllama() as s:
+            c = make(s, retries=0)
+            c._post = lambda *a, **k: {"message": "Not Found"}
+            with self.assertRaises(LlmError):
+                c.ask("sys", "user")
+
+    def test_lone_surrogates_do_not_break_the_request(self):
+        with FakeOllama(responder=lambda p: json.loads(GOOD)) as s:
+            r = make(s).ask("sys", "текст с суррогатом: \ud83d и ещё", RESPONSE_SCHEMA)
+            self.assertTrue(r.data)
+
+    def test_explicit_remote_address_never_replaced_by_local(self):
+        self.assertEqual(llm.candidate_urls("http://192.168.1.5:11434"), ["http://192.168.1.5:11434"])
+        self.assertEqual(llm.candidate_urls("gpu-box"), ["http://gpu-box:11434"])
+        self.assertEqual(llm.candidate_urls("http://127.0.0.1:11434")[0], "http://127.0.0.1:11434")
+
+    def test_room_is_not_oom(self):
+        """Подстрока «oom» (room, zoom) не должна считаться нехваткой памяти."""
+        with FakeOllama() as s:
+            s.script({"status": 500, "error": "no room for the template in this zoom level"})
+            c = make(s, retries=0)
+            with self.assertRaises(LlmError) as cm:
+                c.ask("sys", "user", RESPONSE_SCHEMA)
+            self.assertNotIsInstance(cm.exception, ContextOverflow)
+            self.assertEqual(c.num_ctx, 8192)
+
+
 class Pull(unittest.TestCase):
     def test_pull_reports_progress(self):
         with FakeOllama({"gemma3:12b": ["completion"]}) as s:

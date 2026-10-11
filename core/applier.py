@@ -120,6 +120,10 @@ def build_plan(config: dict, rows: list[dict], only_marked: bool = True) -> list
                                f"путь длиннее {MAX_PATH} символов — сократите имя или вложенность папок"))
             continue
         final, renamed = unique_path(dst)
+        if WINDOWS and len(str(final)) > MAX_PATH:            # суффикс _v2 тоже удлиняет путь
+            plan.append(Action(rel, "слишком длинный путь", rel, "", False,
+                               f"путь длиннее {MAX_PATH} символов — сократите имя или вложенность папок"))
+            continue
         same = src.resolve() == final.resolve()
         if (src.parent == dst.parent and src.name != dst.name
                 and src.name.casefold() == dst.name.casefold()):
