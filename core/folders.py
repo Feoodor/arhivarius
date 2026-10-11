@@ -540,10 +540,33 @@ class FolderIndex:
         want = [stem(t) for t in tokens(name)]
         if not want:
             return ""
+        import re as _re
+
+        def _year(ts: list[str]) -> str:
+            for t in ts:
+                if _re.fullmatch(r"(?:19|20)\d{2}", t):
+                    return t
+            return ""
+
+        want_year = _year(want)
+        want_words = {t for t in want if t != want_year} if want_year else set(want)
+        # есть ли рядом «год-серия» этого же слова («Прошения 2015», «Прошения 2024») —
+        # тогда безгодулевая подтиповая папка («Прошения на покупку») не хост, а другой вид
+        series = bool(want_year and want_words and any(
+            _year([stem(t) for t in tokens(c.name)]) and want_words
+            <= {stem(t) for t in tokens(c.name)}
+            for c in parent.children.values()))
         best, best_score = "", 0
         for child in parent.children.values():
             have = [stem(t) for t in tokens(child.name)]
             if not have:
+                continue
+            # «Прошения 2025» и «Прошения 2015» — соседние годы, а не двойники;
+            # безгодовалый хост («Летний слет …») законен, пока рядом нет год-серии
+            child_year = _year(have)
+            if want_year and child_year and child_year != want_year:
+                continue
+            if want_year and not child_year and series:
                 continue
             ws, hs = set(want), set(have)
             score = sum(3 + min(3, len(w)) // 2 for w in ws & hs)   # точные совпадения
