@@ -24,7 +24,9 @@ from core.config_loader import MAP_NAME, SUGGESTIONS_NAME, load_config, save_con
 from core.folders import FolderIndex
 from core.pipeline import Analyzer, Filters, build_prompt_preview
 from core.prompts import templates_info, reset_template
+from ui import input as uinput
 from ui import theme as T
+from ui.dialogs import open_path, reveal_path, text_window
 from ui.viewer import open_viewer
 
 PAGES = [
@@ -64,37 +66,10 @@ def fmt_size(value: int) -> str:
     return f"{size:.1f} ТБ"
 
 
-class _MenuEvent:
-    """Меню вызывается без «настоящего» события — подставляем виджет-цель."""
-
-    def __init__(self, app):
-        widget = getattr(app, "_ctx_target", None)
-        try:
-            widget = widget if widget is not None else (app.focus_get() or app)
-        except (tk.TclError, KeyError):
-            widget = app
-        self.widget = widget
-
-
-def open_path(path: Path) -> None:
-    import os
-    import subprocess
-    import sys
-
-    path = Path(path)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "win32":
-        os.startfile(str(path))
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)])
-
-
 class OrganizerApp(tk.Tk):
     def __init__(self, config: dict):
         super().__init__()
+        T.reset_caches()
         self.config = config
         from ui import i18n as I
         I.set_lang(str(config.get("ui_lang", "ru")))
@@ -190,17 +165,18 @@ class OrganizerApp(tk.Tk):
         self.geometry(f"{width}x{height}+{left}+{top}")
 
     def _wrap(self, label: tk.Label, extra: int = 0) -> tk.Label:
-        """Длина строки подписки = ширина контейнера: текст не уезжает за правый край."""
-        def resync(event=None) -> None:
-            width = max(280, int((event.width if event else label.winfo_width())) - 12 - extra)
+        """Строка подписи = ширина контейнера: текст не уезжает за правый край."""
+        parent = label.master
+
+        def resync(_event=None) -> None:
             try:
+                width = max(240, int(parent.winfo_width()) - 12 - extra)
                 label.configure(wraplength=width)
             except tk.TclError:
                 pass
 
-        label.bind("<Configure>", resync)
-        self.bind("<Configure>", lambda _e: self.after(60, resync), add="+")
-        resync()
+        parent.bind("<Configure>", resync, add="+")
+        label.after(80, resync)
         return label
 
     # ------------------------------------------------------------------ сборка
@@ -208,29 +184,46 @@ class OrganizerApp(tk.Tk):
         self.gradient = T.Gradient(self)
         self.gradient.place(x=0, y=0, relwidth=1, relheight=1)
 
+        # правая часть шапки упакована ПЕРВОЙ: ей достаётся место раньше длинной подписи слева
         header = tk.Frame(self, bg=T.BG_TOP)
-        header.place(x=24, y=14, relwidth=1, width=-48, height=90)
+        header.pack(fill="x", padx=24, pady=(14, 4))
+        right = tk.Frame(header, bg=T.BG_TOP)
+        right.pack(side="right", anchor="n", padx=(12, 0))
+        status_row = tk.Frame(right, bg=T.BG_TOP)
+        status_row.pack(anchor="e")
+        self.dot = tk.Canvas(status_row, width=16, height=16, bg=T.BG_TOP, highlightthickness=0)
+        self.dot.pack(side="left", padx=(0, 5))
+        self.set_dot("#9aa4b2")
+        self.ollama_label = tk.Label(status_row, text="Ollama: проверка…", bg=T.BG_TOP, fg=T.MUTED,
+                                     font=("Segoe UI", 11), anchor="e", justify="right")
+        self.ollama_label.pack(side="left")
+        T.Pill(right, "Открыть результаты", command=lambda: open_path(self.config["output_path"]),
+               style="ghost", icon="📂").pack(anchor="e", pady=(6, 0))
         title = tk.Frame(header, bg=T.BG_TOP)
-        title.pack(side="left")
+        title.pack(side="left", fill="x", expand=True)
         tk.Label(title, text="Архивариус", bg=T.BG_TOP, fg=T.INK,
                  font=("Segoe UI Semibold", 26)).pack(anchor="w")
-        tk.Label(title, text="читает содержимое · предлагает имя и папку · переносит только утверждённое "
-                             "· отдел настраивается в промпте",
-                 bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 11)).pack(anchor="w")
-        self.dot = tk.Canvas(header, width=16, height=16, bg=T.BG_TOP, highlightthickness=0)
-        self.dot.pack(side="left", padx=(18, 5))
-        self.set_dot("#9aa4b2")
-        self.ollama_label = tk.Label(header, text="Ollama: проверка…", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 11))
-        self.ollama_label.pack(side="left")
-        T.Pill(header, "Открыть результаты", command=lambda: open_path(self.config["output_path"]),
-               style="ghost", icon="📂").pack(side="right")
+        tagline = tk.Label(title, text="читает содержимое · предлагает имя и папку · переносит только "
+                                       "утверждённое", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 11),
+                           justify="left", anchor="w")
+        tagline.pack(anchor="w", fill="x")
+        title.bind("<Configure>", lambda e: tagline.configure(wraplength=max(240, e.width - 8)))
 
         from ui import i18n as I
         self.tabbar = T.TabBar(self, [(k, I.tr(title)) for k, title in PAGES], command=self._show_page, bg=T.BG_TOP)
-        self.tabbar.place(x=24, y=108, relwidth=1, width=-48, height=44)
+        self.tabbar.pack(fill="x", padx=24, pady=(4, 6))
+
+        # строка состояния — до контейнера: на тесном окне именно страница уступает место, а не статус
+        self.status_var = tk.StringVar(value="Готово")
+        status = tk.Frame(self, bg=T.BG_TOP)
+        status.pack(side="bottom", fill="x", padx=24, pady=(4, 8))
+        tk.Label(status, textvariable=self.status_var, bg=T.BG_TOP, fg=T.MUTED,
+                 font=("Segoe UI", 10), anchor="w").pack(side="left")
+        self.progress = ttk.Progressbar(status, mode="determinate", maximum=100)
+        self.progress.pack(side="right", fill="x", expand=True, padx=(20, 0))
 
         self.container = tk.Frame(self, bg=T.BG_TOP)
-        self.container.place(x=24, y=158, relwidth=1, width=-48, relheight=1, height=-190)
+        self.container.pack(fill="both", expand=True, padx=24)
         self.pages: dict[str, T.Scrollable] = {}
         for key, _title in PAGES:
             page = T.Scrollable(self.container, bg=T.BG_TOP)
@@ -248,29 +241,17 @@ class OrganizerApp(tk.Tk):
         self._build_log(self.pages["log"].body)
         self._apply_wrapping()
         self._make_texts_copyable()
-        self._enable_clipboard_shortcuts()
+        uinput.install(self)
         self._show_page("home")
 
-        self.status_var = tk.StringVar(value="Готово")
-        status = tk.Frame(self, bg=T.BG_TOP)
-        status.place(x=24, rely=1, y=-36, relwidth=1, width=-48, height=28)
-        tk.Label(status, textvariable=self.status_var, bg=T.BG_TOP, fg=T.MUTED,
-                 font=("Segoe UI", 10)).pack(side="left")
-        self.progress = ttk.Progressbar(status, mode="determinate", maximum=100)
-        self.progress.pack(side="right", fill="x", expand=True, padx=(20, 0))
-
     def _show_page(self, key: str) -> None:
-        # сначала снимаем колесо со всех страниц: bind_all общий, и последний
-        # снявший обрубил бы прокрутку активной страницы
-        for page in self.pages.values():
-            page.grab_wheel(False)
         page = self.pages.get(key)
         if page is None:
             return
         page.place(x=0, y=0, relwidth=1, relheight=1)
         page.tkraise()
         page.scroll_to_top()
-        page.grab_wheel(True)          # колесо ловится на всей странице, а не только на фоне
+        self._current_page = key
         T.fade_in(page.body, T.ACCENT_SOFT, T.BG_TOP)
 
     def _card(self, parent, title: str = "", tone: str = T.CARD) -> tk.Frame:
@@ -278,11 +259,81 @@ class OrganizerApp(tk.Tk):
         title = _I.tr(title)
         card = T.Card(parent, padding=14, tone=tone)
         card.pack(fill="x", pady=(0, 12))
-        card.inner.pack(fill="x")
         if title:
             tk.Label(card.inner, text=title, bg=tone, fg=T.INK,
                      font=("Segoe UI Semibold", 14)).pack(anchor="w", pady=(0, 8))
         return card.inner
+
+    def _toolbar(self, parent, bg: str = T.BG_TOP, pady=(0, 8)) -> T.Flow:
+        """Панель кнопок с переносом строк: на узком окне кнопки не уезжают за край."""
+        bar = T.Flow(parent, bg=bg)
+        bar.pack(fill="x", pady=pady)
+        return bar
+
+    def _btn(self, bar: T.Flow, text: str, command, style: str = "ghost", **kw) -> T.Pill:
+        pill = T.Pill(bar, text, command=command, style=style, bg=bar["bg"], **kw)
+        bar.add(pill)
+        return pill
+
+    def _more_menu(self, bar: T.Flow, label: str, items: list) -> T.Pill:
+        """Кнопка «⋯ Ещё»: редкие действия в выпадающем меню — панель не раздувается."""
+        menu = tk.Menu(self, tearoff=0, bg=T.CARD, fg=T.INK, activebackground=T.ACCENT,
+                       activeforeground="#ffffff", relief="flat", borderwidth=1, font=("Segoe UI", 10))
+        for text, command in items:
+            menu.add_command(label=text, command=command)
+
+        def post() -> None:
+            try:
+                menu.tk_popup(pill.winfo_rootx(), pill.winfo_rooty() + pill.winfo_height())
+            finally:
+                menu.grab_release()
+
+        pill = self._btn(bar, label, post, "quiet")
+        return pill
+
+    def _note(self, bar: T.Flow, text: str, **kw) -> tk.Label:
+        """Пояснение внутри панели: занимает всю ширину отдельной строкой."""
+        label = tk.Label(bar, text=text, bg=bar["bg"], fg=T.MUTED, font=("Segoe UI", 10),
+                         justify="left", anchor="w", **kw)
+        bar.add(label, stretch=True)
+        return label
+
+    def _table(self, parent, columns, heads: dict, widths: dict, stretch: set, *, show="headings",
+               selectmode="extended", height: int = 8, fill: bool = True, pady=(4, 10)):
+        """Таблица в карточке: растёт на всю свободную высоту, полосы прокрутки по обеим осям."""
+        card = T.Card(parent, padding=8)
+        card.pack(fill="both" if fill else "x", expand=fill, pady=pady)
+        holder = card.inner
+        holder.grid_rowconfigure(0, weight=1)
+        holder.grid_columnconfigure(0, weight=1)
+        tree = ttk.Treeview(holder, columns=columns, show=show, selectmode=selectmode, height=height)
+        ybar = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        xbar = ttk.Scrollbar(holder, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        ybar.grid(row=0, column=1, sticky="ns")
+        xbar.grid(row=1, column=0, sticky="ew")
+        for col in columns:
+            tree.column(col, width=widths.get(col, 100), minwidth=40, stretch=col in stretch)
+            if col in heads:
+                tree.heading(col, text=heads[col])
+        return card, tree
+
+    def _text_box(self, parent, *, height: int = 8, font=("Segoe UI", 10), dark: bool = False,
+                  fill: bool = True, readonly: bool = True, pady=(0, 0)) -> tk.Text:
+        """Текстовое поле с полосой прокрутки; read-only поля выделяются и копируются."""
+        holder = tk.Frame(parent, bg=T.CARD)
+        holder.pack(fill="both" if fill else "x", expand=fill, pady=pady)
+        colors = dict(bg="#101828", fg="#e4e7ec", insertbackground="white") if dark else \
+            dict(bg=T.CARD, fg=T.INK, insertbackground=T.INK)
+        box = tk.Text(holder, wrap="word", height=height, font=font, relief="flat", padx=12, pady=8, **colors)
+        bar = ttk.Scrollbar(holder, orient="vertical", command=box.yview)
+        box.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        box.pack(side="left", fill="both", expand=True)
+        if readonly:
+            T.selectable_copy(box)
+        return box
 
     def _descendants(self):
         """walklist() есть не во всех сборках Tk — обходим дерево сами."""
@@ -296,36 +347,28 @@ class OrganizerApp(tk.Tk):
                 continue
 
     def _apply_wrapping(self) -> None:
-        """Ни одна подпись не должна упираться в правый край: перенос по фактической ширине."""
+        """Широкие подписи (wraplength ≥ 600) переносятся по ширине КОНТЕЙНЕРА, а не по своей собственной.
+
+        Раньше ширина подписи брала сама себя и схлопывалась до 260 px — длинные тексты
+        превращались в узкую колонку. Узкие пояснения рядом с полями остаются как есть."""
         for widget in self._descendants():
             if not isinstance(widget, tk.Label):
                 continue
             try:
-                if int(widget.cget("wraplength") or 0) <= 0:
+                if int(widget.cget("wraplength") or 0) < 600:
                     continue
             except (ValueError, tk.TclError):
                 continue
-
-            def resync(event=None, target=widget) -> None:
-                width = max(260, int(event.width if event else target.winfo_width()))
-                try:
-                    target.configure(wraplength=width)
-                except tk.TclError:
-                    pass
-
-            target = widget
-            target.bind("<Configure>", resync)
-            target.after(120, resync)
+            self._wrap(widget)
 
     def _make_texts_copyable(self) -> None:
-        """Журнал, инструкция и подробности строки должны копироваться (Ctrl+C).
+        """Журнал, инструкция и подробности строки выделяются и копируются (Ctrl+C, правый клик).
 
         disabled-поле в tkinter не выделяется мышью, поэтому поля остаются обычными,
-        а ввод перехватывается — случайно «испортить» текст нельзя.
-        """
+        а ввод перехватывается — случайно «испортить» текст нельзя."""
         editable = {id(self.prompt_text)} if hasattr(self, "prompt_text") else set()
         for widget in self._descendants():
-            if not isinstance(widget, tk.Text) or id(widget) in editable:
+            if not isinstance(widget, tk.Text) or id(widget) in editable or getattr(widget, "_ro_guard", False):
                 continue
             try:
                 widget.configure(state="normal")
@@ -334,116 +377,7 @@ class OrganizerApp(tk.Tk):
                 continue
 
     def _enable_clipboard_shortcuts(self) -> None:
-        """Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A во всех полях — в tkinter это не по умолчанию."""
-
-        def copy(event):
-            w = event.widget
-            try:
-                if w.winfo_class() in ("Entry", "TEntry", "TCombobox", "Combobox"):
-                    try:
-                        text = w.selection_get()
-                    except tk.TclError:
-                        text = w.get()
-                else:
-                    try:
-                        text = w.get("sel.first", "sel.last")
-                    except tk.TclError:
-                        text = w.get("1.0", "end-1c")
-                w.clipboard_clear()
-                w.clipboard_append(text)
-            except tk.TclError:
-                pass
-            return "break"
-
-        def paste(event):
-            w = event.widget
-            try:
-                data = w.clipboard_get()
-            except tk.TclError:
-                return "break"
-            cls = w.winfo_class()
-            if cls in ("TCombobox", "Combobox") or getattr(w, "_ro_guard", False):
-                return "break"                       #ReadOnly-поля не трогаем
-            try:
-                if cls in ("Entry", "TEntry"):
-                    data = (data.splitlines() or [""])[0]
-                    try:
-                        w.delete("sel.first", "sel.last")
-                    except tk.TclError:
-                        pass
-                    w.insert("insert", data)
-                elif cls == "Text":
-                    if str(w.cget("state")) == "disabled":
-                        return "break"
-                    try:
-                        w.delete("sel.first", "sel.last")
-                    except tk.TclError:
-                        pass
-                    w.insert("insert", data)
-            except tk.TclError:
-                pass
-            return "break"
-
-        def cut(event):
-            w = event.widget
-            copy(event)
-            if getattr(w, "_ro_guard", False) or w.winfo_class() in ("TCombobox", "Combobox"):
-                return "break"
-            try:
-                if w.winfo_class() == "Text" and str(w.cget("state")) == "disabled":
-                    return "break"
-                w.delete("sel.first", "sel.last")
-            except tk.TclError:
-                pass
-            return "break"
-
-        def select_all(event):
-            w = event.widget
-            try:
-                cls = w.winfo_class()
-                if cls in ("Entry", "TEntry", "TCombobox", "Combobox"):
-                    w.selection_range(0, "end")
-                    w.icursor("end")
-                elif cls == "Text":
-                    w.tag_add("sel", "1.0", "end-1c")
-            except tk.TclError:
-                pass
-            return "break"
-
-        for cls in ("Text", "Entry", "TEntry", "TCombobox", "Combobox"):
-            for seq, fn in (("<Control-c>", copy), ("<Control-C>", copy), ("<Insert>", None),
-                            ("<Control-v>", paste), ("<Control-V>", paste),
-                            ("<Control-x>", cut), ("<Control-X>", cut),
-                            ("<Control-a>", select_all), ("<Control-A>", select_all)):
-                if fn is None:
-                    continue
-                try:
-                    self.bind_class(cls, seq, fn, add="+")
-                except tk.TclError:
-                    continue
-
-        # правый клик — то же самое мышкой: не каждый помнит горячие клавиши
-        menu = tk.Menu(self, tearoff=0, bg=T.CARD, fg=T.INK, activebackground=T.ACCENT,
-                       activeforeground="#ffffff", relief="flat", borderwidth=1)
-        menu.add_command(label="Копировать", command=lambda: copy(_MenuEvent(self)))
-        menu.add_command(label="Вставить", command=lambda: paste(_MenuEvent(self)))
-        menu.add_command(label="Вырезать", command=lambda: cut(_MenuEvent(self)))
-        menu.add_separator()
-        menu.add_command(label="Выделить всё", command=lambda: select_all(_MenuEvent(self)))
-        self._ctx_menu = menu
-
-        def show_menu(event):
-            self._ctx_target = event.widget
-            try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
-
-        for cls in ("Text", "Entry", "TEntry", "TCombobox"):
-            try:
-                self.bind_class(cls, "<Button-3>", show_menu, add="+")
-            except tk.TclError:
-                continue
+        uinput.install(self)
 
     # ------------------------------------------------------------------- обзор
     def _build_home(self, parent) -> None:
@@ -455,7 +389,6 @@ class OrganizerApp(tk.Tk):
             card = T.Card(cards, padding=12)
             card.pack(side="left", fill="x", expand=True, padx=(0, 10))
             inner = card.inner
-            inner.pack(fill="x")
             value = tk.Label(inner, text="—", bg=T.CARD, fg=T.INK, font=("Segoe UI Semibold", 22))
             value.pack(anchor="w")
             tk.Label(inner, text=_I.tr(name), bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10)).pack(anchor="w")
@@ -474,8 +407,6 @@ class OrganizerApp(tk.Tk):
         side_card = T.Card(flow, padding=16)
         steps_card.pack(side="left", fill="x", expand=True, padx=(0, 12))
         side_card.pack(side="left", fill="x", expand=True)
-        steps_card.inner.pack(fill="x")
-        side_card.inner.pack(fill="x")
 
         tk.Label(steps_card.inner, text="Рабочий цикл", bg=T.CARD, fg=T.INK,
                  font=("Segoe UI Semibold", 14)).pack(anchor="w", pady=(0, 8))
@@ -543,18 +474,17 @@ class OrganizerApp(tk.Tk):
 
     # -------------------------------------------------------------------- карта
     def _build_map(self, parent) -> None:
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(0, 8))
-        T.Pill(bar, "👁 Смотреть и утвердить", command=self.view_selected, style="accent").pack(side="left")
-        T.Pill(bar, "✅ Утвердить помеченные", command=self.approve_marked, style="good").pack(side="left", padx=6)
-        T.Pill(bar, "Отметить", command=lambda: self.set_apply(True), style="ghost").pack(side="left")
-        T.Pill(bar, "Снять", command=lambda: self.set_apply(False), style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "☑ Выделить все", command=self.select_all_rows, style="quiet").pack(side="left")
-        T.Pill(bar, "🔄 Обновить", command=self.load_map, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "💾 Сохранить", command=self.save_map, style="ghost").pack(side="right")
+        bar = self._toolbar(parent, pady=(0, 2))
+        self._btn(bar, "👁 Смотреть и утвердить", self.view_selected, "accent")
+        self._btn(bar, "✅ Утвердить помеченные", self.approve_marked, "good")
+        self._btn(bar, "Отметить", lambda: self.set_apply(True))
+        self._btn(bar, "Снять", lambda: self.set_apply(False))
+        self._btn(bar, "☑ Выделить все", self.select_all_rows, "quiet")
+        self._btn(bar, "🧪 Пробный перенос", self.show_dry_run)
+        self._btn(bar, "🚚 Применить перенос", self.apply_marked, "accent")
 
         tools = tk.Frame(parent, bg=T.BG_TOP)
-        tools.pack(fill="x", pady=(0, 6))
+        tools.pack(fill="x", pady=(4, 6))
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.filter_rows())
         tk.Label(tools, text="Поиск", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10)).pack(side="left")
@@ -576,91 +506,99 @@ class OrganizerApp(tk.Tk):
                                 values=("имя", "имя+путь", "путь"))
         mode_box.pack(side="left", padx=(2, 0))
         mode_box.bind("<<ComboboxSelected>>", lambda _e: self.render_rows())
-        bar2 = tk.Frame(parent, bg=T.BG_TOP)
-        bar2.pack(fill="x", pady=(4, 0))
-        T.Pill(bar2, "🔁 Переразобрать выбранное", command=self.requeue_selected, style="ghost").pack(side="left")
-        T.Pill(bar2, "🔬 Перепроверить глубже", command=self.recheck_selected, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar2, "🩺 Проверить странное", command=self.audit_anomalous, style="good").pack(side="left", padx=6)
-        T.Pill(bar2, "📦 Папка целиком", command=self.run_folder_pass, style="accent").pack(side="left", padx=6)
-        T.Pill(bar2, "🧠 Уроки", command=self.distill_lessons, style="quiet").pack(side="left", padx=6)
-        T.Pill(bar2, "✔ Не трогать", command=self.keep_selected, style="quiet").pack(side="left", padx=6)
-        T.Pill(bar2, "🧪 Пробный перенос", command=self.show_dry_run, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar2, "📦 Применить", command=self.apply_marked, style="accent").pack(side="left", padx=6)
 
-        card = T.Card(parent, padding=8)
-        card.pack(fill="both", expand=True, pady=(4, 10))
-        holder = card.inner
-        holder.pack(fill="both")
+        bar2 = self._toolbar(parent, pady=(0, 4))
+        self._btn(bar2, "🔁 Переразобрать выбранное", self.requeue_selected)
+        self._btn(bar2, "🔬 Перепроверить глубже", self.recheck_selected)
+        self._btn(bar2, "📦 Папка целиком", self.run_folder_pass, "accent")
+        self._btn(bar2, "✔ Не трогать", self.keep_selected, "quiet")
+        self._more_menu(bar2, "⋯ Ещё", [
+            ("🩺 Проверить странное", self.audit_anomalous),
+            ("🧠 Уроки из правок", self.distill_lessons),
+            ("🔄 Перечитать карту с диска", self.load_map),
+            ("💾 Сохранить карту", self.save_map),
+        ])
+
         columns = ("apply", "status", "conf_name", "conf_move", "current", "new", "target", "op")
-        widths = {"apply": 44, "status": 96, "conf_name": 58, "conf_move": 58,
-                  "current": 420, "new": 340, "target": 340, "op": 180}
+        widths = {"apply": 40, "status": 84, "conf_name": 56, "conf_move": 56,
+                  "current": 300, "new": 300, "target": 280, "op": 150}
         heads = {"apply": "✓", "status": "Статус", "conf_name": "Имя", "conf_move": "Папка",
-                 "current": "Было (текущий путь)",
-                 "new": "Станет", "target": "Куда", "op": "Действие"}
-        self.tree = ttk.Treeview(holder, columns=columns, show="headings", selectmode="extended")
+                 "current": "Было (текущий путь)", "new": "Станет", "target": "Куда", "op": "Действие"}
+        _card, self.tree = self._table(parent, columns, heads, widths, {"current", "new", "target"},
+                                       height=7)
         for col in columns:
-            self.tree.heading(col, text=heads[col], command=lambda c=col: self.sort_rows(c))
-            self.tree.column(col, width=widths[col], minwidth=44, stretch=col in {"current", "new", "target"})
-        ybar = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=ybar.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        ybar.pack(side="right", fill="y")
+            self.tree.heading(col, command=lambda c=col: self.sort_rows(c))
         for tag, color in (("ready", T.GOOD), ("review", T.WARN), ("error", T.BAD), ("done", T.MUTED)):
             self.tree.tag_configure(tag, foreground=color)
         self.tree.bind("<Double-1>", lambda _e: self.view_selected())
         self.tree.bind("<Return>", lambda _e: self.view_selected())
         self.tree.bind("<space>", lambda _e: self.toggle_apply())
-        self.tree.bind("<Control-a>", lambda _e: self.select_all_rows())
-        self.tree.bind("<Control-A>", lambda _e: self.select_all_rows())
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self.show_details())
+        uinput.attach_tree(self.tree, on_select_all=self.select_all_rows, extra=[
+            ("Копировать «Было» (путь)", lambda: self._copy_column(self.tree, "current")),
+            ("Копировать «Станет» (имя)", lambda: self._copy_column(self.tree, "new")),
+            ("Копировать «Куда» (папка)", lambda: self._copy_column(self.tree, "target")),
+        ])
 
         detail = T.Card(parent, padding=10, tone=T.CARD_SOFT)
         detail.pack(fill="x")
-        detail.inner.pack(fill="x")
-        tk.Label(detail.inner, text="Полные данные строки — без обрезки", bg=T.CARD_SOFT, fg=T.MUTED,
-                 font=("Segoe UI Semibold", 10)).pack(anchor="w")
-        self.details_box = tk.Text(detail.inner, height=8, wrap="word", bg=T.CARD, relief="flat",
-                                   font=("Segoe UI", 10), padx=10, pady=8, fg=T.INK)
-        self.details_box.pack(fill="x")
-        self.details_box.configure(state="disabled")
+        head = tk.Frame(detail.inner, bg=T.CARD_SOFT)
+        head.pack(fill="x")
+        tk.Label(head, text="Полные данные строки — без обрезки", bg=T.CARD_SOFT, fg=T.MUTED,
+                 font=("Segoe UI Semibold", 10)).pack(side="left")
+        T.Pill(head, "📋 Копировать", command=self.copy_details, style="quiet",
+               bg=T.CARD_SOFT).pack(side="right")
+        self.details_box = self._text_box(detail.inner, height=6, fill=False, pady=(4, 0))
+
+    def _copy_column(self, tree: ttk.Treeview, column: str) -> None:
+        """Значения одного столбца у выделенных строк — по строке на файл (путь, имя, папка)."""
+        values = [str(tree.set(iid, column)) for iid in tree.selection()]
+        if values:
+            uinput.put_on_clipboard(tree, "\n".join(values))
+            self.status_var.set(f"скопировано строк: {len(values)}")
+
+    def copy_details(self) -> None:
+        text = self.details_box.get("1.0", "end-1c").strip()
+        if text:
+            uinput.put_on_clipboard(self.details_box, text)
+            self.status_var.set("подробности строки скопированы")
 
     # --------------------------------------------------------------- структура
     def _build_tree(self, parent) -> None:
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(0, 8))
-        tk.Label(bar, text="Глубина", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10)).pack(side="left")
+        bar = self._toolbar(parent)
+        bar.add(tk.Label(bar, text="Глубина", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10)))
         self.depth_var = tk.IntVar(value=int(self.config["folders"].get("depth", 5)))
-        ttk.Spinbox(bar, from_=1, to=9, width=4, textvariable=self.depth_var,
-                    command=self.load_structure).pack(side="left", padx=6)
-        tk.Label(bar, bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10), wraplength=520, justify="left",
-                 text="Глубина = сколько ярусов раскрывать. Модель видит карту системы до настроенной "
-                      "глубины, кроме скрытых ветвей («Разобрать»).").pack(side="left", padx=8)
+        spin = ttk.Spinbox(bar, from_=1, to=9, width=4, textvariable=self.depth_var, command=self.load_structure)
+        bar.add(spin)
+        self._btn(bar, "Развернуть всё", lambda: self._tree_open(True), "quiet")
+        self._btn(bar, "Свернуть", lambda: self._tree_open(False), "quiet")
+        self._note(bar, "Глубина = сколько ярусов раскрывать. Модель видит карту системы до настроенной "
+                        "глубины, кроме скрытых ветвей («Разобрать»).")
 
-        actions = tk.Frame(parent, bg=T.BG_TOP)
-        actions.pack(fill="x", pady=(0, 8))
-        T.Pill(actions, "📑 Аудит структуры", command=lambda: self._open_name("structure_audit.md"),
-               style="accent").pack(side="left")
-        T.Pill(actions, "📂 Папки", command=self.open_folders_window, style="good").pack(side="left", padx=6)
-        T.Pill(actions, "📄 План папок", command=self.make_plan, style="ghost").pack(side="left")
-        T.Pill(actions, "Создать папки из плана", command=self.create_plan, style="good").pack(side="left")
-        self.plan_note = tk.Label(actions, bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10),
-                                  wraplength=520, justify="left",
-                                  text="план лежит в structure_plan.txt — правьте его перед созданием")
-        self.plan_note.pack(side="left", padx=10)
+        actions = self._toolbar(parent)
+        self._btn(actions, "📑 Аудит структуры", lambda: self._open_name("structure_audit.md"), "accent")
+        self._btn(actions, "📂 Папки", self.open_folders_window, "good")
+        self._btn(actions, "📄 План папок", self.make_plan)
+        self._btn(actions, "Создать папки из плана", self.create_plan, "good")
+        self.plan_note = self._note(actions, "план лежит в structure_plan.txt — правьте его перед созданием")
 
-        card = T.Card(parent, padding=8)
-        card.pack(fill="both", expand=True)
-        holder = card.inner
-        holder.pack(fill="both")
-        self.folder_tree = ttk.Treeview(holder, columns=("files",), show="tree headings")
+        _card, self.folder_tree = self._table(parent, ("files",), {"files": "Файлов в ветке"},
+                                              {"files": 120}, set(), show="tree headings",
+                                              selectmode="browse", height=8, pady=(0, 10))
         self.folder_tree.heading("#0", text="Папка")
-        self.folder_tree.heading("files", text="Файлов в ветке")
         self.folder_tree.column("#0", width=420, minwidth=180, stretch=True)
         self.folder_tree.column("files", width=120, minwidth=90, anchor="e", stretch=False)
-        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.folder_tree.yview)
-        self.folder_tree.configure(yscrollcommand=scroll.set)
-        self.folder_tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        uinput.attach_tree(self.folder_tree, extra=[
+            ("Копировать путь папки", lambda: uinput.put_on_clipboard(
+                self.folder_tree, "\n".join(self.folder_tree.selection()))),
+        ])
+
+    def _tree_open(self, value: bool) -> None:
+        stack = list(self.folder_tree.get_children(""))
+        while stack:
+            iid = stack.pop()
+            self.folder_tree.item(iid, open=value)
+            stack.extend(self.folder_tree.get_children(iid))
 
     # ------------------------------------------------------- структура: план папок
     def make_plan(self) -> None:
@@ -697,27 +635,24 @@ class OrganizerApp(tk.Tk):
 
         # ------------------------------------------------------------------ промпт
     def _build_prompt(self, parent) -> None:
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(0, 8))
-        tk.Label(bar, text="Файл", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10)).pack(side="left")
+        bar = self._toolbar(parent)
+        bar.add(tk.Label(bar, text="Файл", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10)))
         self.templates = templates_info(self.config["app_dir"])
         self.prompt_choice = tk.StringVar(value=self.templates[0][1])
-        ttk.Combobox(bar, textvariable=self.prompt_choice, state="readonly", width=26,
-                     values=[name for _, name, _ in self.templates]).pack(side="left", padx=6)
+        combo = ttk.Combobox(bar, textvariable=self.prompt_choice, state="readonly", width=26,
+                             values=[name for _, name, _ in self.templates])
+        bar.add(combo)
         self.prompt_choice.trace_add("write", lambda *_: self.load_prompt_editor())
-        T.Pill(bar, "💾 Сохранить", command=self.save_prompt, style="accent").pack(side="left", padx=4)
-        T.Pill(bar, "Образец", command=self.restore_prompt, style="ghost").pack(side="left")
-        T.Pill(bar, "Открыть в редакторе", command=self.open_prompt_file, style="ghost").pack(side="left", padx=4)
-        T.Pill(bar, "🔎 Проверить промпт", command=self.check_prompt, style="good").pack(side="left", padx=4)
-        T.Pill(bar, "Показать запрос строки", command=self.preview_prompt, style="quiet").pack(side="right")
-        self.prompt_info = tk.Label(bar, text="", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10))
-        self.prompt_info.pack(side="right", padx=10)
+        self._btn(bar, "💾 Сохранить", self.save_prompt, "accent")
+        self._btn(bar, "Образец", self.restore_prompt)
+        self._btn(bar, "Открыть в редакторе", self.open_prompt_file)
+        self._btn(bar, "🔎 Проверить промпт", self.check_prompt, "good")
+        self._btn(bar, "Показать запрос строки", self.preview_prompt, "quiet")
+        self.prompt_info = self._note(bar, "")
         card = T.Card(parent, padding=8)
         card.pack(fill="both", expand=True)
-        card.inner.pack(fill="both")
-        self.prompt_text = tk.Text(card.inner, wrap="word", font=("Cascadia Mono", 10), bg=T.CARD,
-                                   relief="flat", padx=12, pady=10, fg=T.INK, insertbackground=T.INK)
-        self.prompt_text.pack(fill="both", expand=True)
+        self.prompt_text = self._text_box(card.inner, height=10, font=("Cascadia Mono", 10), readonly=False)
+        self.prompt_text.configure(insertbackground=T.INK, undo=True)
         tk.Label(parent, bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10), wraplength=1280, justify="left",
                  text="Подстановки {roots}, {doc_types}, {folders_block}, {mode_line} программа заполняет сама. "
                       "Изменения действуют со следующей партии.").pack(anchor="w", pady=(6, 0))
@@ -731,107 +666,100 @@ class OrganizerApp(tk.Tk):
                      "лишние копии и то, что модель сочла ненужным, — а по вашему решению переносит их в "
                      "отдельную папку. Удаляете там вы сами, вручную. Перенос пишется в журнал и откатывается.")
                  ).pack(anchor="w")
-        self.trash_path_label = tk.Label(intro, bg=T.CARD, fg=T.INK, font=("Segoe UI Semibold", 10), anchor="w")
+        self.trash_path_label = tk.Label(intro, bg=T.CARD, fg=T.INK, font=("Segoe UI Semibold", 10), anchor="w",
+                                         wraplength=1180, justify="left")
         self.trash_path_label.pack(anchor="w", pady=(4, 0))
 
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(0, 8))
-        T.Pill(bar, "🔄 Обновить список", command=self.load_trash, style="accent").pack(side="left")
-        T.Pill(bar, "Отметить выбранное", command=lambda: self.trash_mark(True), style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "Снять отметку", command=lambda: self.trash_mark(False), style="ghost").pack(side="left")
-        T.Pill(bar, "☑ Выделить все", command=self.trash_select_all, style="quiet").pack(side="left", padx=6)
-        T.Pill(bar, "Убрать выделение", command=self.trash_clear_selection, style="ghost").pack(side="left")
-        T.Pill(bar, "Перенести в корзину", command=self.move_trash, style="danger").pack(side="left", padx=6)
-        T.Pill(bar, "📂 Показать в папке", command=self.reveal_trash, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "Открыть файл", command=self.open_trash_file, style="ghost").pack(side="left")
-        T.Pill(bar, "Открыть CSV", command=lambda: self._open_name("trash_candidates.csv"), style="ghost").pack(side="right")
+        bar = self._toolbar(parent)
+        self._btn(bar, "🔄 Обновить список", self.load_trash, "accent")
+        self._btn(bar, "Отметить выбранное", lambda: self.trash_mark(True))
+        self._btn(bar, "Снять отметку", lambda: self.trash_mark(False))
+        self._btn(bar, "☑ Выделить все", self.trash_select_all, "quiet")
+        self._btn(bar, "Убрать выделение", self.trash_clear_selection)
+        self._btn(bar, "Перенести в корзину", self.move_trash, "danger")
+        self._btn(bar, "📂 Показать в папке", self.reveal_trash)
+        self._btn(bar, "Открыть файл", self.open_trash_file)
+        self._btn(bar, "Открыть CSV", lambda: self._open_name("trash_candidates.csv"))
 
-        card = T.Card(parent, padding=8)
-        card.pack(fill="both", expand=True)
-        holder = card.inner
-        holder.pack(fill="both")
-        self.trash_tree = ttk.Treeview(holder, columns=("mark", "path", "size", "reason", "kind"), show="headings")
+        columns = ("mark", "path", "size", "reason", "kind")
+        heads = {"mark": "✓", "path": "Файл (полный путь)", "size": "Размер", "kind": "Признак",
+                 "reason": "Почему предлагаю убрать"}
+        widths = {"mark": 40, "path": 420, "size": 84, "kind": 100, "reason": 340}
+        _card, self.trash_tree = self._table(parent, columns, heads, widths, {"path", "reason"},
+                                             height=7, pady=(0, 8))
         self._trash_sort, self._trash_reverse = "", False
-        for col, head, width, stretch in (("mark", "✓", 44, False), ("path", "Файл (полный путь)", 520, True),
-                                          ("size", "Размер", 96, False), ("kind", "Признак", 110, False),
-                                          ("reason", "Почему предлагаю убрать", 380, True)):
-            self.trash_tree.heading(col, text=head, command=lambda c=col: self.sort_trash(c))
-            self.trash_tree.column(col, width=width, minwidth=44, stretch=stretch)
-        self.trash_tree.bind("<Control-a>", lambda _e: self.trash_select_all())
-        self.trash_tree.bind("<Control-A>", lambda _e: self.trash_select_all())
-        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.trash_tree.yview)
-        self.trash_tree.configure(yscrollcommand=scroll.set)
-        self.trash_tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        for col in columns:
+            self.trash_tree.heading(col, command=lambda c=col: self.sort_trash(c))
         self.trash_tree.bind("<space>", lambda _e: self.trash_toggle())
         self.trash_tree.bind("<Return>", lambda _e: self.reveal_trash())
         self.trash_tree.bind("<Double-1>", self._trash_double, add="+")
         self.trash_tree.bind("<Button-1>", self._trash_click, add="+")
         self.trash_tree.bind("<<TreeviewSelect>>", lambda _e: self.show_trash_path())
         self._trash_last_iid = ""
+        uinput.attach_tree(self.trash_tree, on_select_all=self.trash_select_all, extra=[
+            ("Копировать полный путь", self.copy_trash_paths),
+        ])
 
         hint = T.Card(parent, padding=10, tone=T.CARD_SOFT)
-        hint.pack(fill="x", pady=(8, 0))
-        hint.inner.pack(fill="x")
-        self.trash_path_box = tk.Label(hint.inner, text="Клик по строке — здесь появится полный путь к файлу.",
-                                       bg=T.CARD_SOFT, fg=T.INK, font=("Segoe UI", 10), anchor="w",
-                                       justify="left", wraplength=900)
-        self.trash_path_box.pack(fill="x")
+        hint.pack(fill="x")
+        self.trash_path_box = self._text_box(hint.inner, height=3, fill=False, font=("Segoe UI", 10))
+        self.trash_path_box.configure(bg=T.CARD_SOFT)
+        self._set_ro_text(self.trash_path_box, "Клик по строке — здесь появится полный путь к файлу "
+                                               "(его можно выделить и скопировать).")
+
+    def _set_ro_text(self, box: tk.Text, text: str) -> None:
+        """Записать текст в поле «только для чтения» (оно остаётся выделяемым и копируемым)."""
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        box.insert("1.0", text)
+
+    def copy_trash_paths(self) -> None:
+        full = [str(self.config["scan_root"] / str(r.get("Путь", ""))) for r in self._trash_selected()]
+        if full:
+            uinput.put_on_clipboard(self.trash_tree, "\n".join(full))
+            self.status_var.set(f"скопировано путей: {len(full)}")
 
     # ----------------------------------------------------------------- плагины
     def _build_plugins(self, parent) -> None:
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(0, 8))
-        T.Pill(bar, "🔄 Проверить", command=self.load_plugins, style="accent").pack(side="left")
-        T.Pill(bar, "Проверить выбранное", command=self.verify_plugin, style="good").pack(side="left", padx=6)
-        T.Pill(bar, "Установить выбранное", command=self.install_plugin, style="ghost").pack(side="left")
-        T.Pill(bar, "Включить / выключить", command=self.toggle_plugin, style="ghost").pack(side="left", padx=6)
-        tk.Label(bar, bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10), wraplength=520,
-                 text="pip ставит библиотеки; внешние программы (Tesseract, ffmpeg) проверяем отдельно — "
-                      "кнопкой «Проверить выбранное»").pack(side="left", padx=10)
-        card = T.Card(parent, padding=8)
-        card.pack(fill="both", expand=True)
-        holder = card.inner
-        holder.pack(fill="both")
-        self.plugin_tree = ttk.Treeview(holder, columns=("title", "state", "enabled", "why", "how"), show="headings")
-        for col, head, width in (("title", "Возможность", 240), ("state", "Статус", 260),
-                                 ("enabled", "Включено", 90), ("why", "Что даёт", 420), ("how", "Как поставить", 280)):
-            self.plugin_tree.heading(col, text=head)
-            self.plugin_tree.column(col, width=width, minwidth=60)
-        self.plugin_tree.pack(side="left", fill="both", expand=True)
+        bar = self._toolbar(parent)
+        self._btn(bar, "🔄 Проверить", self.load_plugins, "accent")
+        self._btn(bar, "Проверить выбранное", self.verify_plugin, "good")
+        self._btn(bar, "Установить выбранное", self.install_plugin)
+        self._btn(bar, "Включить / выключить", self.toggle_plugin)
+        self._note(bar, "pip ставит библиотеки; внешние программы (Tesseract, ffmpeg) проверяем отдельно — "
+                        "кнопкой «Проверить выбранное»")
+        columns = ("title", "state", "enabled", "why", "how")
+        heads = {"title": "Возможность", "state": "Статус", "enabled": "Включено", "why": "Что даёт",
+                 "how": "Как поставить"}
+        widths = {"title": 200, "state": 220, "enabled": 84, "why": 340, "how": 260}
+        _card, self.plugin_tree = self._table(parent, columns, heads, widths, {"why", "how"},
+                                              selectmode="browse", height=6, pady=(0, 8))
         for tag, color in (("ok", T.GOOD), ("miss", T.WARN)):
             self.plugin_tree.tag_configure(tag, foreground=color)
+        uinput.attach_tree(self.plugin_tree)
         logcard = T.Card(parent, padding=8, tone=T.CARD_SOFT)
-        logcard.pack(fill="x", pady=(10, 0))
-        logcard.inner.pack(fill="x")
-        self.plugin_log = tk.Text(logcard.inner, height=7, wrap="word", bg="#101828", fg="#e4e7ec",
-                                  font=("Cascadia Mono", 10), relief="flat", padx=10, pady=8)
-        self.plugin_log.pack(fill="x")
+        logcard.pack(fill="x")
+        self.plugin_log = self._text_box(logcard.inner, height=6, fill=False, font=("Cascadia Mono", 10),
+                                         dark=True)
 
     # -------------------------------------------------------------- инструкция
     def _build_guide(self, parent) -> None:
+        bar = self._toolbar(parent)
+        self._btn(bar, "Дубликаты", self.start_duplicates)
+        self._btn(bar, "Похожие фото", self.start_photo_dupes)
+        self._btn(bar, "Битые файлы", self.run_broken)
+        self._btn(bar, "Старые форматы: список", lambda: self.run_convert(False))
+        self._btn(bar, "Старые: конвертировать", lambda: self.run_convert(True), "good")
+        self._btn(bar, "Имена: предложения", lambda: self.run_repair(False))
+        self._btn(bar, "Имена: применить", lambda: self.run_repair(True), "danger")
+        self._btn(bar, "Оригиналы после конвертации", self.sweep_converted)
+        self._note(bar, "Утилиты: кнопка «Оригиналы после конвертации» ищет .doc/.rtf/.odt, рядом с которыми "
+                        "уже есть .docx: список ляжет в «Корзину» — оттуда переносите по своему решению.")
         card = T.Card(parent, padding=12)
         card.pack(fill="both", expand=True)
-        card.inner.pack(fill="both")
-        box = tk.Text(card.inner, wrap="word", font=("Segoe UI", 11), bg=T.CARD, relief="flat",
-                      padx=14, pady=10, fg=T.INK)
+        box = self._text_box(card.inner, height=10, font=("Segoe UI", 11))
         box.insert("1.0", GUIDE_TEXT)
-        box.configure(state="disabled")
-        box.pack(fill="both", expand=True)
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(10, 0))
-        T.Pill(bar, "Дубликаты", command=self.start_duplicates, style="ghost").pack(side="left")
-        T.Pill(bar, "Похожие фото", command=self.start_photo_dupes, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "Битые файлы", command=self.run_broken, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "Старые форматы: список", command=lambda: self.run_convert(False), style="ghost").pack(side="left")
-        T.Pill(bar, "Старые: конвертировать", command=lambda: self.run_convert(True), style="good").pack(side="left", padx=6)
-        T.Pill(bar, "Имена: предложения", command=lambda: self.run_repair(False), style="ghost").pack(side="left")
-        T.Pill(bar, "Имена: применить", command=lambda: self.run_repair(True), style="danger").pack(side="left", padx=6)
-        T.Pill(bar, "Оригиналы после конвертации", command=self.sweep_converted,
-               style="ghost").pack(side="left", padx=6)
-        tk.Label(bar, bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 9), wraplength=460, justify="left",
-                 text="кнопка ищет .doc/.rtf/.odt, рядом с которыми уже есть .docx: список ляжет "
-                      "в «Корзину» — оттуда переносите по своему решению").pack(side="left", padx=6)
+        box.mark_set("insert", "1.0")
 
     # --------------------------------------------------------------- настройки
     def _build_settings(self, parent) -> None:
@@ -872,13 +800,10 @@ class OrganizerApp(tk.Tk):
             "doc_convert": tk.BooleanVar(value=bool(self.config.get("plugins", {}).get("doc_convert"))),
             "quarantine_on": tk.BooleanVar(value=bool(self.config.get("plugins", {}).get("quarantine", True))),
         }
-        top = tk.Frame(parent, bg=T.BG_TOP)
-        top.pack(fill="x", pady=(0, 8))
-        T.Pill(top, "💾 Сохранить настройки", command=self.save_settings, style="accent").pack(side="left")
-        T.Pill(top, "Диагностика", command=self.run_doctor, style="ghost").pack(side="left", padx=6)
-        tk.Label(top, bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 10), wraplength=700, justify="left",
-                 text="страница прокручивается колесом мыши; всё сохранённое действует со следующей партии"
-                 ).pack(side="left", padx=10)
+        top = self._toolbar(parent)
+        self._btn(top, "💾 Сохранить настройки", self.save_settings, "accent")
+        self._btn(top, "Диагностика", self.run_doctor)
+        self._note(top, "страница прокручивается колесом мыши; всё сохранённое действует со следующей партии")
 
         warn = self._card(parent)
         tk.Label(warn, bg=T.CARD, fg=T.WARN, font=("Segoe UI Semibold", 11), wraplength=1240, justify="left",
@@ -899,6 +824,8 @@ class OrganizerApp(tk.Tk):
                        variable=self.svars["auto_pick"]).pack(fill="x", pady=(2, 4))
         self._field_with_browse(block, "Папка результатов", self.svars["output_dir"])
         self._field_with_browse(block, "Папка корзины", self.svars["quarantine"])
+
+        self._build_models_card(parent)
 
         block = self._card(parent, "🤖 Модель и контекст")
         self._entry_field(parent=block, label="Адрес Ollama (свой ПК или другой в сети)",
@@ -973,12 +900,10 @@ class OrganizerApp(tk.Tk):
                            selectcolor=T.CARD_SOFT, anchor="w", font=("Segoe UI", 10),
                            variable=self.svars[key]).pack(fill="x", pady=1)
 
-        buttons = tk.Frame(parent, bg=T.BG_TOP)
-        buttons.pack(fill="x", pady=(4, 10))
-        T.Pill(buttons, "💾 Сохранить настройки", command=self.save_settings, style="accent").pack(side="left")
-        T.Pill(buttons, "Диагностика", command=self.run_doctor, style="ghost").pack(side="left", padx=6)
-        T.Pill(buttons, "Открыть config.json", command=lambda: open_path(self.config["config_path"]),
-               style="ghost").pack(side="left")
+        buttons = self._toolbar(parent, pady=(4, 10))
+        self._btn(buttons, "💾 Сохранить настройки", self.save_settings, "accent")
+        self._btn(buttons, "Диагностика", self.run_doctor)
+        self._btn(buttons, "Открыть config.json", lambda: open_path(self.config["config_path"]))
         for key in ("num_ctx", "content_chars", "budget_chars"):
             self.svars[key].trace_add("write", self._update_context_line)
 
@@ -1034,45 +959,222 @@ class OrganizerApp(tk.Tk):
 
     # ------------------------------------------------------------------ журнал
     def _build_log(self, parent) -> None:
-        bar = tk.Frame(parent, bg=T.BG_TOP)
-        bar.pack(fill="x", pady=(0, 8))
-        T.Pill(bar, "Очистить экран", command=lambda: self.log_text.delete("1.0", "end"), style="ghost").pack(side="left")
-        T.Pill(bar, "Журнал операций", command=lambda: self._open_name("operations_log.csv"), style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "История переносов", command=lambda: self._open_name(mapio.APPLIED_NAME), style="ghost").pack(side="left")
-        T.Pill(bar, "Проблемные файлы", command=lambda: self._open_name("broken_files.csv"), style="ghost").pack(side="left", padx=6)
+        bar = self._toolbar(parent)
+        self._btn(bar, "📋 Копировать всё", self.copy_log, "accent")
+        self._btn(bar, "Очистить экран", lambda: self.log_text.delete("1.0", "end"))
+        self._btn(bar, "Журнал операций", lambda: self._open_name("operations_log.csv"))
+        self._btn(bar, "История переносов", lambda: self._open_name(mapio.APPLIED_NAME))
+        self._btn(bar, "Проблемные файлы", lambda: self._open_name("broken_files.csv"))
         card = T.Card(parent, padding=8)
         card.pack(fill="both", expand=True)
-        card.inner.pack(fill="both")
-        self.log_text = tk.Text(card.inner, wrap="word", bg="#101828", fg="#e4e7ec", insertbackground="white",
-                                font=("Cascadia Mono", 10), relief="flat", padx=12, pady=10)
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text = self._text_box(card.inner, height=12, font=("Cascadia Mono", 10), dark=True)
         for tag, color in (("error", "#fda29b"), ("ok", "#86efac"), ("note", "#93c5fd")):
             self.log_text.tag_configure(tag, foreground=color)
 
+    def copy_log(self) -> None:
+        text = self.log_text.get("1.0", "end-1c")
+        if text.strip():
+            uinput.put_on_clipboard(self.log_text, text)
+            self.status_var.set("журнал скопирован в буфер обмена")
+
     # ------------------------------------------------------------------- общее
     def _model_names(self) -> tuple[str, ...]:
-        from core.llm import OllamaClient
-
-        client = OllamaClient(base_url=self.config["llm"]["base_url"], model=self.config["llm"]["model_text"])
-        names = client.list_models() if client.is_alive() else []
+        info = getattr(self, "_model_info", None) or {}
+        names = [r["name"] for r in info.get("rows", [])]
         return tuple(sorted(set(names) | {self.config["llm"]["model_text"], self.config["llm"]["model_vision"]}))
 
     def _model_options(self) -> tuple[str, ...]:
-        """Список для выпадашек БЕЗ сетевого запроса: настройки + прошлый кэш."""
-        cached = getattr(self, "_model_names_cached", ())
+        """Список для выпадашек БЕЗ сетевого запроса: настройки + прошлый ответ Ollama."""
+        info = getattr(self, "_model_info", None) or {}
+        cached = [r["name"] for r in info.get("rows", []) if not r.get("embed")]
         return tuple(sorted(set(cached) | {self.config["llm"]["model_text"],
                                            self.config["llm"]["model_vision"]}))
+
+    def _build_models_card(self, parent) -> None:
+        card = self._card(parent, "🧠 Модели Ollama")
+        self.models_status = tk.Label(card, text="Проверяю Ollama…", bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10),
+                                      justify="left", anchor="w", wraplength=900)
+        self.models_status.pack(anchor="w", fill="x")
+        columns = ("name", "size", "caps", "role")
+        holder = tk.Frame(card, bg=T.CARD)
+        holder.pack(fill="x", pady=(6, 4))
+        self.models_tree = ttk.Treeview(holder, columns=columns, show="headings", selectmode="browse", height=4)
+        for col, head, width, stretch in (("name", "Модель", 260, True), ("size", "Размер", 80, False),
+                                          ("caps", "Умеет", 200, True), ("role", "Сейчас", 220, True)):
+            self.models_tree.heading(col, text=head)
+            self.models_tree.column(col, width=width, minwidth=60, stretch=stretch)
+        bar = ttk.Scrollbar(holder, orient="vertical", command=self.models_tree.yview)
+        self.models_tree.configure(yscrollcommand=bar.set)
+        self.models_tree.pack(side="left", fill="x", expand=True)
+        bar.pack(side="right", fill="y")
+        uinput.attach_tree(self.models_tree, extra=[
+            ("Копировать имя модели", lambda: uinput.put_on_clipboard(
+                self.models_tree, "\n".join(str(self.models_tree.set(i, "name"))
+                                              for i in self.models_tree.selection()))),
+        ])
+        buttons = T.Flow(card, bg=T.CARD)
+        buttons.pack(fill="x", pady=(4, 0))
+        for label, command, style in (
+                ("🔄 Проверить Ollama", self.fetch_model_names_async, "ghost"),
+                ("Взять как текстовую", lambda: self._use_selected_model("model"), "ghost"),
+                ("Взять для зрения", lambda: self._use_selected_model("vision_model"), "ghost"),
+                ("✨ Подобрать лучшие", self.auto_pick_models, "good"),
+                ("⬇ Скачать модель…", self.open_model_downloader, "accent")):
+            pill = T.Pill(buttons, label, command=command, style=style, bg=T.CARD)
+            buttons.add(pill)
+
+    def _render_models(self) -> None:
+        """Заполнить таблицу моделей и строку состояния по последнему ответу Ollama."""
+        if not hasattr(self, "models_tree"):
+            return
+        info = getattr(self, "_model_info", None) or {}
+        self.models_tree.delete(*self.models_tree.get_children())
+        if not info.get("alive"):
+            self.models_status.configure(
+                fg=T.BAD, text="Ollama не отвечает. Запустите приложение Ollama (или проверьте адрес выше) "
+                               "и нажмите «Проверить Ollama».")
+            return
+        from core.llm import same_model
+        want_text = self.svars["model"].get().strip()
+        want_vision = self.svars["vision_model"].get().strip()
+        for row in info["rows"]:
+            roles = []
+            if same_model(row["name"], want_text):
+                roles.append("текст")
+            if same_model(row["name"], want_vision) and self.svars["vision"].get():
+                roles.append("зрение")
+            if row.get("embed"):
+                roles.append("эмбеддинги")
+            caps = ", ".join(c for c in row["caps"] if c != "completion") or ("текст" if row["caps"] else "?")
+            self.models_tree.insert("", "end", iid=row["name"], values=(
+                row["name"], f"{row['gb']:.1f} ГБ", caps, " + ".join(roles)))
+        missing = [w for w in (want_text, want_vision if self.svars["vision"].get() else "") if w
+                   and not any(same_model(w, r["name"]) for r in info["rows"])]
+        tail = ""
+        if missing:
+            tail = ("  ⚠ не установлено: " + ", ".join(missing) +
+                    (f". Программа возьмёт «{info.get('best_text')}»." if info.get("best_text") else "") +
+                    " Скачать выбранную можно кнопкой справа.")
+        self.models_status.configure(
+            fg=T.WARN if missing else T.GOOD,
+            text=f"Ollama {info.get('version') or ''} · моделей: {len(info['rows'])}.{tail}")
+
+    def _use_selected_model(self, var: str) -> None:
+        picked = self.models_tree.selection()
+        if not picked:
+            messagebox.showinfo("Модели", "Сначала выберите модель в таблице.", parent=self)
+            return
+        self.svars[var].set(picked[0])
+        self._render_models()
+        self.status_var.set(f"выбрано: {picked[0]} — нажмите «Сохранить настройки»")
+
+    def auto_pick_models(self) -> None:
+        info = getattr(self, "_model_info", None) or {}
+        if not info.get("alive") or not info.get("rows"):
+            messagebox.showinfo("Модели", "Ollama не отвечает или в ней нет моделей. Скачайте модель кнопкой "
+                                          "«Скачать модель…».", parent=self)
+            return
+        text, vision = info.get("best_text"), info.get("best_vision")
+        if text:
+            self.svars["model"].set(text)
+        if vision:
+            self.svars["vision_model"].set(vision)
+        self._render_models()
+        self.status_var.set(f"подобрано: текст — {text or '—'}, зрение — {vision or 'нет подходящей'}; "
+                            "нажмите «Сохранить настройки»")
+
+    def open_model_downloader(self) -> None:
+        from core import models as models_mod
+        win = tk.Toplevel(self)
+        win.title("Скачать модель")
+        win.geometry("760x420")
+        win.configure(bg=T.CARD)
+        tk.Label(win, bg=T.CARD, fg=T.INK, font=("Segoe UI Semibold", 12), justify="left", anchor="w",
+                 text="Выберите модель — программа скачает её через Ollama (нужен интернет, "
+                      "файлы большие).").pack(fill="x", padx=14, pady=(12, 4))
+        tree = ttk.Treeview(win, columns=("tag", "gb", "role", "why"), show="headings", selectmode="browse", height=7)
+        for col, head, width in (("tag", "Модель", 130), ("gb", "ГБ", 50), ("role", "Для чего", 190),
+                                 ("why", "Железо и особенности", 330)):
+            tree.heading(col, text=head)
+            tree.column(col, width=width, stretch=col in {"role", "why"})
+        installed = [r["name"] for r in (getattr(self, "_model_info", None) or {}).get("rows", [])]
+        for rec in models_mod.RECOMMENDED:
+            have = any(models_mod.same_model(rec["tag"], n) for n in installed)
+            tree.insert("", "end", iid=rec["tag"], values=(rec["tag"] + (" ✓" if have else ""), rec["gb"],
+                                                           rec["role"], rec["why"]))
+        tree.pack(fill="both", expand=True, padx=14, pady=4)
+        uinput.attach_tree(tree)
+        custom = tk.StringVar()
+        row = tk.Frame(win, bg=T.CARD)
+        row.pack(fill="x", padx=14, pady=(4, 0))
+        tk.Label(row, text="или имя модели:", bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10)).pack(side="left")
+        tk.Entry(row, textvariable=custom, bg=T.CARD_SOFT, fg=T.INK, relief="flat", highlightthickness=1,
+                 highlightbackground=T.BORDER, highlightcolor=T.ACCENT, font=("Segoe UI", 11)
+                 ).pack(side="left", fill="x", expand=True, padx=8, ipady=4)
+
+        def start() -> None:
+            tag = custom.get().strip() or (tree.selection()[0] if tree.selection() else "")
+            if not tag:
+                messagebox.showinfo("Скачать модель", "Выберите модель в списке или впишите её имя.", parent=win)
+                return
+            win.destroy()
+            self.pull_model(tag)
+
+        bar = tk.Frame(win, bg=T.CARD)
+        bar.pack(fill="x", padx=14, pady=10)
+        T.Pill(bar, "⬇ Скачать", command=start, style="accent", bg=T.CARD).pack(side="left")
+        T.Pill(bar, "Закрыть", command=win.destroy, style="quiet", bg=T.CARD).pack(side="left", padx=6)
+
+    def pull_model(self, tag: str) -> None:
+        from core.llm import client_from_config
+
+        def work():
+            client = client_from_config(self.config, "text")
+            last = {"pct": -1}
+
+            def progress(status: str, done: int, total: int) -> None:
+                pct = int(done * 100 / total) if total else 0
+                if total and pct == last["pct"]:
+                    return
+                last["pct"] = pct
+                self.events.put(("progress", pct, 100, f"Скачивание {tag} ({status[:24]})"))
+
+            client.pull(tag, progress)
+            self.events.put(("models_refresh",))
+            return {"модель": tag}
+
+        self.log_event(f"скачивание модели {tag}…")
+        self.run_worker(f"Скачивание {tag}", work)
 
     def fetch_model_names_async(self) -> None:
         """Список моделей Ollama приезжает фоном — окно не виснет при незапущенной Ollama."""
         def work() -> None:
             try:
-                names = self._model_names()
+                info = self._collect_model_info()
             except Exception:
-                names = ()
-            self.events.put(("models", names))
+                info = {"alive": False, "version": "", "rows": [], "best_text": "", "best_vision": ""}
+            self.events.put(("models", info))
 
         threading.Thread(target=work, daemon=True, name="models").start()
+
+    def _collect_model_info(self) -> dict:
+        """Что установлено в Ollama и что подойдёт — для блока «Модели» и выпадающих списков."""
+        from core import models as models_mod
+        from core.llm import client_from_config
+
+        client = client_from_config(self.config, "text")
+        if not client.is_alive():
+            return {"alive": False, "version": "", "rows": [], "best_text": "", "best_vision": ""}
+        details = client.list_models_detailed()
+        rows = []
+        for item in details:
+            name = item["name"]
+            caps = client.capabilities(name)
+            rows.append({"name": name, "gb": int(item.get("size") or 0) / 1e9, "caps": caps,
+                         "embed": models_mod.is_embedding(name)})
+        return {"alive": True, "version": client.version(), "rows": rows,
+                "best_text": models_mod.pick_best(details, vision=False, client=client),
+                "best_vision": models_mod.pick_best(details, vision=True, client=client)}
 
     def _open_name(self, name: str) -> None:
         path = self.config["output_path"] / name
@@ -1131,20 +1233,19 @@ class OrganizerApp(tk.Tk):
             self.append_log(f"{row.get('Статус')} · {row.get('Текущий путь')} → "
                             f"{row.get('Целевой путь') or '—'}/{row.get('Новое имя')}")
         elif kind == "ollama":
-            alive, models = event[1], event[2]
-            model = self.config["llm"]["model_text"]
-            ready = alive and model in models
-            self.set_dot(T.GOOD if ready else (T.WARN if alive else T.BAD))
-            self.ollama_label.configure(text=(f"Ollama · {model} готова" if ready else
-                                              (f"Ollama · нет модели {model}" if alive else "Ollama · не отвечает")))
+            self._model_info = event[1] if isinstance(event[1], dict) else getattr(self, "_model_info", None)
+            self._show_ollama_state(event[1])
         elif kind == "models":
-            self._model_names_cached = tuple(event[1])
-            if self._model_names_cached:
-                for combo, var in getattr(self, "_model_combos", []):
-                    try:
-                        combo.configure(values=sorted(set(self._model_names_cached) | {var.get()}))
-                    except tk.TclError:
-                        pass   # страница настроек уже закрыта
+            self._model_info = event[1]
+            for combo, var in getattr(self, "_model_combos", []):
+                try:
+                    combo.configure(values=list(self._model_options()))
+                except tk.TclError:
+                    pass   # страница настроек уже закрыта
+            self._render_models()
+            self._show_ollama_state(event[1])
+        elif kind == "models_refresh":
+            self.fetch_model_names_async()
         elif kind == "snapshot":
             self._apply_snapshot(event[1], event[2], event[3])
         elif kind == "done":
@@ -1317,22 +1418,20 @@ class OrganizerApp(tk.Tk):
             self.analyzer.pause_flag.set()
             self.status_var.set("Пауза после текущего файла")
 
+    def _text_window(self, title: str, text: str, size: str = "980x640", wrap: str = "word") -> tk.Toplevel:
+        return text_window(self, title, text, size=size, wrap=wrap,
+                           on_copy=lambda: self.status_var.set("текст скопирован в буфер обмена"))
+
     def show_dry_run(self) -> None:
         self.save_map(silent=True)
         plan = applier.build_plan(self.config, self.rows)
         lines, counters = applier.describe(plan, self.config)
-        win = tk.Toplevel(self)
-        win.title("Пробный перенос — файлы не изменяются")
-        win.geometry("1060x660")
-        win.configure(bg=T.CARD)
-        tk.Label(win, bg=T.CARD, fg=T.INK, font=("Segoe UI Semibold", 12), padx=14, pady=12, justify="left",
-                 text=(f"Файлов: {counters['всего']} · Объём: {fmt_size(counters['байт'])} · "
-                       f"Новых папок: {counters['новых папок']} · Конфликтов имён: {counters['конфликтов']} · "
-                       "удалений нет")).pack(fill="x")
-        box = tk.Text(win, wrap="none", font=("Cascadia Mono", 10), padx=12, pady=10, bg=T.CARD, fg=T.INK)
-        box.pack(fill="both", expand=True)
-        box.insert("end", "\n".join(lines) if lines else "Нет отмеченных действий.")
-        box.configure(state="disabled")
+        head = (f"Файлов: {counters['всего']} · Объём: {fmt_size(counters['байт'])} · "
+                f"Новых папок: {counters['новых папок']} · Конфликтов имён: {counters['конфликтов']} · "
+                "удалений нет")
+        self._text_window("Пробный перенос — файлы не изменяются",
+                          head + "\n\n" + ("\n".join(lines) if lines else "Нет отмеченных действий."),
+                          size="1060x660", wrap="none")
 
     def apply_marked(self) -> None:
         self.save_map(silent=True)
@@ -1867,10 +1966,11 @@ class OrganizerApp(tk.Tk):
             return
         row = rows[0]
         full = self.config["scan_root"] / str(row.get("Путь", ""))
-        self.trash_path_box.configure(
-            text=f"{row.get('Путь')}\nразмер {fmt_size(int(row.get('Размер') or 0))} · изменён "
-                 f"{row.get('Изменён') or '—'} · признак: {row.get('Уверенность')} · {row.get('Причина')}\n"
-                 f"полный путь: {full}")
+        self._set_ro_text(
+            self.trash_path_box,
+            f"{row.get('Путь')}\nразмер {fmt_size(int(row.get('Размер') or 0))} · изменён "
+            f"{row.get('Изменён') or '—'} · признак: {row.get('Уверенность')} · {row.get('Причина')}\n"
+            f"полный путь: {full}")
 
     def _trash_full_path(self):
         rows = self._trash_selected()
@@ -1888,15 +1988,8 @@ class OrganizerApp(tk.Tk):
         full = self._trash_full_path()
         if not full:
             return
-        import subprocess
-        import sys
         try:
-            if sys.platform == "win32":
-                subprocess.Popen(["explorer", "/select,", str(full)])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", str(full)])
-            else:
-                subprocess.Popen(["xdg-open", str(full.parent)])
+            reveal_path(full)
         except Exception as exc:
             messagebox.showerror("Показать в папке", str(exc))
 
@@ -1906,8 +1999,7 @@ class OrganizerApp(tk.Tk):
         if not full:
             return
         try:
-            import os
-            os.startfile(str(full))  # Windows: открыть связанной программой
+            open_path(full)
         except Exception as exc:
             messagebox.showerror("Открыть файл", f"Не удалось открыть:\n{exc}")
 
@@ -1939,7 +2031,8 @@ class OrganizerApp(tk.Tk):
             if depth >= limit:
                 return
             for child in node.children.values():
-                self.folder_tree.insert(parent, "end", iid=child.path, text=child.name, values=(child.total,))
+                self.folder_tree.insert(parent, "end", iid=child.path, text=child.name,
+                                        values=(child.total,), open=depth < 2)
                 walk(child, child.path, depth + 1)
 
         walk(self.index.root)
@@ -1989,14 +2082,7 @@ class OrganizerApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Просмотр промпта", f"{type(exc).__name__}: {exc}")
             return
-        win = tk.Toplevel(self)
-        win.title("Что уйдёт в модель")
-        win.geometry("1040x700")
-        win.configure(bg=T.CARD)
-        box = tk.Text(win, wrap="word", font=("Cascadia Mono", 10), padx=12, pady=10, bg=T.CARD, fg=T.INK)
-        box.pack(fill="both", expand=True)
-        box.insert("1.0", text)
-        box.configure(state="disabled")
+        self._text_window("Что уйдёт в модель", text, size="1040x700")
 
     def check_prompt(self) -> None:
         """Считаем честно: влезает ли промпт целиком и совпадает ли схема с текстом инструкции."""
@@ -2032,11 +2118,15 @@ class OrganizerApp(tk.Tk):
         start = system.find("ФОРМАТ ОТВЕТА")
         block = system[start:system.find("ПРИМЕРЫ")] if start >= 0 else ""
         required = list(RESPONSE_SCHEMA["required"])
-        missing = [name for name in required if block and name not in block]
-        extra = [name for name in RESPONSE_SCHEMA["properties"] if block and name not in block]
-        if not block:
-            lines.append("⚠ В инструкции нет раздела «ФОРМАТ ОТВЕТА» — модель может отвечать не по схеме.")
+        if llm.get("structured_output", True) and not block:
+            lines.append("Схема ответа: структура JSON навязывается Ollama (structured_output), "
+                         f"описывать её в тексте инструкции не нужно ({len(required)} обязательных полей).")
+        elif not block:
+            lines.append("⚠ structured_output выключен, а в инструкции нет раздела «ФОРМАТ ОТВЕТА» — "
+                         "модель может отвечать не по схеме. Включите structured_output или опишите формат.")
         else:
+            missing = [name for name in required if name not in block]
+            extra = [name for name in RESPONSE_SCHEMA["properties"] if name not in block]
             named = [name for name in RESPONSE_SCHEMA["properties"] if name in block]
             lines.append(f"Схема ответа: в тексте описаны {len(named)} из {len(RESPONSE_SCHEMA['properties'])} полей "
                          f"(обязательных в схеме: {len(required)}).")
@@ -2074,23 +2164,7 @@ class OrganizerApp(tk.Tk):
                         "ok" if fits else "note")
 
     def _show_report(self, title: str, text: str) -> None:
-        win = tk.Toplevel(self)
-        win.title(title)
-        win.geometry("900x560")
-        win.configure(bg=T.CARD)
-        box = tk.Text(win, wrap="word", font=("Cascadia Mono", 10), padx=12, pady=10, bg=T.CARD, fg=T.INK)
-        box.pack(fill="both", expand=True)
-        box.insert("1.0", text)
-        T.selectable_copy(box)
-        bar = tk.Frame(win, bg=T.CARD)
-        bar.pack(fill="x")
-
-        def copy_all() -> None:
-            box.tag_add("sel", "1.0", "end-1c")
-            box.event_generate("<Control-c>")
-
-        T.Pill(bar, "Копировать всё", command=copy_all, style="ghost").pack(side="left", padx=12, pady=8)
-        T.Pill(bar, "Закрыть", command=win.destroy, style="quiet").pack(side="left", padx=6)
+        self._text_window(title, text, size="900x560")
 
     # ----------------------------------------------------------------- корзина
     def load_trash(self, silent: bool = False) -> None:
@@ -2146,7 +2220,8 @@ class OrganizerApp(tk.Tk):
                 row.get("Путь"), fmt_size(int(row.get("Размер") or 0)),
                 row.get("Причина"), row.get("Уверенность")))
         marked = sum(1 for row in self.trash_rows if (row.get("Отметить") or "").upper() == "TRUE")
-        self.status_var.set(f"кандидатов: {len(self.trash_rows)}, отмечено: {marked}")
+        if getattr(self, "_current_page", "") == "trash":
+            self.status_var.set(f"кандидатов: {len(self.trash_rows)}, отмечено: {marked}")
 
     def _trash_selected(self) -> list[dict]:
         return [self.trash_rows[int(iid)] for iid in self.trash_tree.selection() if iid.isdigit()]
@@ -2402,24 +2477,37 @@ class OrganizerApp(tk.Tk):
             code = cli.cmd_doctor(self.config)
         finally:
             cli.say = original
-        win = tk.Toplevel(self)
-        win.title("Диагностика")
-        win.geometry("900x560")
-        win.configure(bg=T.CARD)
-        box = tk.Text(win, wrap="word", font=("Cascadia Mono", 10), padx=12, pady=10, bg=T.CARD, fg=T.INK)
-        box.pack(fill="both", expand=True)
-        box.insert("1.0", "\n".join(lines) + f"\n\nкод возврата: {code}")
-        box.configure(state="disabled")
+        self._text_window("Диагностика", "\n".join(lines) + f"\n\nкод возврата: {code}", size="900x560")
 
     def check_ollama(self) -> None:
-        from core.llm import OllamaClient
-
+        """Статус Ollama в шапке: жива ли, есть ли выбранная модель, чем её заменят."""
         def worker() -> None:
-            client = OllamaClient(base_url=self.config["llm"]["base_url"], model=self.config["llm"]["model_text"])
-            alive = client.is_alive()
-            self.events.put(("ollama", alive, client.list_models() if alive else []))
+            try:
+                info = self._collect_model_info()
+            except Exception:
+                info = {"alive": False, "version": "", "rows": [], "best_text": "", "best_vision": ""}
+            self.events.put(("models", info))
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=True, name="ollama-check").start()
+
+    def _show_ollama_state(self, info) -> None:
+        from core.llm import same_model
+        info = info if isinstance(info, dict) else {}
+        want = self.config["llm"]["model_text"]
+        if not info.get("alive"):
+            self.set_dot(T.BAD)
+            self.ollama_label.configure(text="Ollama · не отвечает")
+            return
+        have = any(same_model(want, r["name"]) for r in info.get("rows", []))
+        if have:
+            self.set_dot(T.GOOD)
+            self.ollama_label.configure(text=f"Ollama · {want} готова")
+        elif info.get("best_text"):
+            self.set_dot(T.WARN)
+            self.ollama_label.configure(text=f"Ollama · нет {want}, возьму {info['best_text']}")
+        else:
+            self.set_dot(T.WARN)
+            self.ollama_label.configure(text=f"Ollama · нет модели {want}")
 
     def _close(self) -> None:
         if self.worker and self.worker.is_alive():
