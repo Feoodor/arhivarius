@@ -41,6 +41,25 @@ class Parsing(unittest.TestCase):
         self.assertEqual(got, sorted(got))
         self.assertEqual(sysreport.size_tiers(12 * sysreport.GB), "до 14B")
 
+    def test_virtual_adapters_are_dropped_and_igpu_means_cpu(self):
+        found = [{"name": "Parsec Virtual Display Adapter", "vram": 0, "vendor": ""},
+                 {"name": "Intel(R) Iris(R) Xe Graphics", "vram": 0, "vendor": "Intel"},
+                 {"name": "Microsoft Basic Display Adapter", "vram": 0, "vendor": ""}]
+        real = sysreport.real_gpus(found)
+        self.assertEqual([g["name"] for g in real], ["Intel(R) Iris(R) Xe Graphics"])
+        self.assertTrue(sysreport.is_cpu_only(real))
+        self.assertTrue(sysreport.is_cpu_only([]))
+        self.assertFalse(sysreport.is_cpu_only([{"name": "RTX", "vram": 8 * sysreport.GB, "vendor": "NVIDIA"}]))
+        self.assertFalse(sysreport.is_cpu_only([{"name": "M2", "vram": 16 * sysreport.GB, "vendor": "Apple",
+                                                 "unified": True}]))
+
+    def test_cpu_only_caps_recommended_size(self):
+        big = 17 * sysreport.GB
+        self.assertEqual(sysreport.size_tiers(big), "до 27B")
+        self.assertIn("до 8B", sysreport.size_tiers(big, cpu_only=True))
+        self.assertIn("очень медленными", sysreport.size_tiers(big, cpu_only=True))
+        self.assertEqual(sysreport.size_tiers(6 * sysreport.GB, cpu_only=True), "до 4B")
+
     def test_clean_base(self):
         self.assertEqual(sysreport.clean_base(""), "http://127.0.0.1:11434")
         self.assertEqual(sysreport.clean_base("192.168.1.5"), "http://192.168.1.5:11434")

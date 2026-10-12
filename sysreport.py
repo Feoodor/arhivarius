@@ -138,6 +138,15 @@ def vendor_of(name: str) -> str:
     return ""
 
 
+VIRTUAL_MARKERS = ("parsec", "virtual", "basic render", "basic display", "remote display", "hyper-v",
+                   "vmware", "citrix", "indirect display", "displaylink", "mirror driver")
+
+
+def real_gpus(found: list[dict]) -> list[dict]:
+    """Без виртуальных адаптеров (Parsec, RDP, Hyper-V): они не считают и не имеют своей памяти."""
+    return [g for g in found if not any(m in g.get("name", "").lower() for m in VIRTUAL_MARKERS)]
+
+
 def windows_gpus() -> list[dict]:
     """Все видеоадаптеры из реестра; там память хранится 64-битной (WMI обрезает на 4 ГБ)."""
     found = []
@@ -185,7 +194,7 @@ def gpus(total_ram: int) -> list[dict]:
     if found:
         return found
     if sys.platform == "win32":
-        return windows_gpus()
+        return real_gpus(windows_gpus())
     if sys.platform == "darwin":
         chip = run(["sysctl", "-n", "machdep.cpu.brand_string"])
         if "apple" in chip.lower():
@@ -223,7 +232,13 @@ def model_budget(gpu_list: list[dict], ram_total: int) -> tuple[int, str]:
     return int(ram_total * 0.55), "оперативная память (видеокарта не подходит или не найдена) — будет медленнее"
 
 
-def size_tiers(budget: int) -> str:
+def is_cpu_only(gpu_list: list[dict]) -> bool:
+    """Ollama считает на видеокарте только NVIDIA/AMD (и Apple). Встроенная Intel — это процессор."""
+    return not any(g.get("unified") or (g.get("vendor") in ("NVIDIA", "AMD") and g.get("vram", 0) >= 3 * GB)
+                   for g in gpu_list)
+
+
+def size_tiers(budget: int, cpu_only: bool = False) -> str:
     """Какие размеры моделей (веса в Q4 + запас на контекст ~2-3 ГБ) умещаются целиком."""
     room = budget / GB - 2.5
     tiers = [(4, "до 4B"), (8, "до 8B"), (13, "до 14B"), (20, "до 27B"), (40, "до 32B+")]
@@ -231,6 +246,8 @@ def size_tiers(budget: int) -> str:
     for need, label in tiers:
         if room >= need * 0.62 + 0.5:
             fit = label
+    if cpu_only and fit not in ("ничего крупнее 1-2B", "до 4B", "до 8B"):
+        return "до 8B с нормальной скоростью (12B и крупнее поместятся, но будут очень медленными)"
     return fit
 
 
@@ -398,7 +415,12 @@ def build_report(url: str, do_bench: bool, bench_limit: int) -> list[str]:
     add(f"Диск моделей: свободно {gb(free)} из {gb(size)}" + (" (папка моделей переопределена)" if custom else ""))
     budget, source = model_budget(gpu_list, total)
     add(f"Бюджет под модель: ~{gb(budget)} — {source}")
-    add(f"Целиком в память помещаются модели {size_tiers(budget)} (с запасом под контекст)")
+    cpu = is_cpu_only(gpu_list)
+    add(f"Целиком в память помещаются модели {size_tiers(budget, cpu)} (с запасом под контекст)")
+    if cpu:
+        add("Видеокарта для Ollama не используется: модели считаются процессором")
+    if avail and avail < budget:
+        add(f"ВНИМАНИЕ: сейчас свободно только {gb(avail)} ОЗУ — закройте тяжёлые программы перед запуском моделей")
 
     add("\nПЕРЕМЕННЫЕ OLLAMA")
     envs = sorted(k for k in os.environ if k.startswith("OLLAMA_"))
