@@ -307,6 +307,12 @@ def inspect_models(api: Api) -> list[dict]:
     return result
 
 
+def is_cloud(name: str) -> bool:
+    """Облачная модель Ollama: считается на чужом сервере, платная, документы уходят с компьютера."""
+    tag = name.lower().rsplit(":", 1)[-1] if ":" in name else ""
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
 def is_embedding(row: dict) -> bool:
     return "embedding" in row["caps"] and "completion" not in row["caps"] or \
         any(m in row["name"].lower() for m in ("embed", "bge-", "minilm"))
@@ -367,7 +373,7 @@ def unload(api: Api, model: str) -> None:
 
 def bench(api: Api, rows: list[dict], limit: int, lines: list[str]) -> None:
     png = make_png()
-    chosen = [r for r in rows if not is_embedding(r)]
+    chosen = [r for r in rows if not is_embedding(r) and not is_cloud(r["name"])]
     chosen.sort(key=lambda r: r["size"])
     for row in chosen[:limit]:
         name = row["name"]
@@ -450,6 +456,8 @@ def build_report(url: str, do_bench: bool, bench_limit: int) -> list[str]:
         caps = ",".join(c for c in row["caps"]) or "?"
         ctx = f", контекст до {row['ctx']}" if row["ctx"] else ""
         extra = f" · ОШИБКА {row['error']}" if row.get("error") else ""
+        if is_cloud(row["name"]):
+            extra += " · ОБЛАЧНАЯ: считается на сервере Ollama, платно, данные уходят с компьютера — не мерялась"
         add(f"   - {row['name']}: {gb(row['size'])}, {row['params'] or '?'}, {row['quant'] or '?'}, "
             f"возможности [{caps}]{ctx}{extra}")
     try:

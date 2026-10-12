@@ -9,9 +9,9 @@
   понятным объяснением для журнала), без записи в config.json;
 * ``RECOMMENDED`` — короткий список «что скачать», с пояснением по железу.
 
-Ранжирование — по семействам, проверенным на русском тексте со структурным
-JSON-ответом. Порядок можно менять: это только запасной выбор, настройки
-пользователя главнее.
+Ранжирование — по семействам, по общим описаниям моделей; на документах конкретного
+отдела оно НЕ измерялось (для этого есть compare_models.py). Порядок можно менять:
+это только запасной выбор, настройки пользователя главнее.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .llm import ModelMissing, OllamaClient, OllamaUnavailable, normalize_model,
 
 # от лучшего к худшему; совпадение по началу имени
 FAMILY_RANK = (
-    "gemma3", "gemma4", "qwen3-vl", "mistral-small3", "qwen2.5vl", "llama3.2-vision",
+    "gemma3", "gemma4", "qwen3-vl", "qwen3.5", "mistral-small3", "qwen2.5vl", "llama3.2-vision",
     "qwen3", "qwen2.5", "gemma3n", "llama3.3", "llama3.1", "phi4", "mistral", "gemma2",
 )
 
@@ -54,9 +54,17 @@ def is_embedding(name: str) -> bool:
     return any(marker in low for marker in EMBEDDING_MARKERS)
 
 
+def is_cloud(name: str) -> bool:
+    """Облачные модели Ollama (``…:cloud``, ``…-cloud``): считаются на чужом сервере и платные.
+
+    Для архива это недопустимо без явного выбора человека: содержимое документов ушло бы с компьютера."""
+    tag = (name or "").lower().rsplit(":", 1)[-1] if ":" in (name or "") else ""
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
 def is_unsuitable(name: str) -> bool:
     low = (name or "").lower()
-    return is_embedding(low) or any(marker in low for marker in UNSUITABLE_MARKERS)
+    return is_embedding(low) or is_cloud(low) or any(marker in low for marker in UNSUITABLE_MARKERS)
 
 
 def _param_billions(name: str) -> float:

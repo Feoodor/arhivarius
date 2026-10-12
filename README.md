@@ -73,6 +73,7 @@ pip install -r requirements.txt      # PyMuPDF, openpyxl, Pillow (опциона
 python app.py                        # интерфейс
 python sysreport.py --bench          # отчёт о компьютере и Ollama: железо, модели, скорость, чтение картинок
                                      #   (без личных данных; результат в sysreport.txt — для подбора моделей)
+python compare_models.py --models gemma3:4b,qwen3.5:9b   # одни и те же файлы разными моделями, результаты рядом
 python selftest.py                   # 100+ автотестов: поддельная Ollama со сбоями, временный архив
                                      #   тесты окна нужен дисплей: xvfb-run -a python selftest.py
 python etalon_check.py               # точность на эталонных файлах (нужна Ollama)

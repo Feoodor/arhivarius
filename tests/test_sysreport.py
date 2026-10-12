@@ -117,6 +117,14 @@ class Report(unittest.TestCase):
         unloads = [p for path, p in server.requests if path == "/api/chat" and p.get("keep_alive") == 0]
         self.assertEqual({p["model"] for p in unloads}, {"gemma3:4b", "qwen3:8b"})
 
+    def test_cloud_models_are_flagged_and_not_benchmarked(self):
+        server = FakeOllama({"gemma3:4b": ["completion"], "minimax-m3:cloud": ["completion"]}).start()
+        self.addCleanup(server.stop)
+        text = "\n".join(sysreport.build_report(server.url, True, 5))
+        self.assertIn("ОБЛАЧНАЯ", text)
+        used = {p.get("model") for path, p in server.requests if path == "/api/chat" and p.get("messages")}
+        self.assertEqual(used, {"gemma3:4b"})
+
     def test_bench_error_is_reported_per_model(self):
         server = FakeOllama({"gemma3:4b": ["completion"]}).start()
         self.addCleanup(server.stop)
