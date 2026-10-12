@@ -137,6 +137,18 @@ class ReviewModels(unittest.TestCase):
         self.assertEqual(pick_best(lst("qwen3-coder:30b", "mistral:7b"), vision=False), "mistral:7b")
         self.assertEqual(pick_best(lst("nomic-embed-text", "bge-m3"), vision=False), "")
 
+    def test_cloud_models_are_never_picked_automatically(self):
+        from core.models import is_cloud, pick_best
+        self.assertTrue(is_cloud("minimax-m3:cloud"))
+        self.assertTrue(is_cloud("qwen3-coder:480b-cloud"))
+        self.assertFalse(is_cloud("gemma3:4b"))
+        self.assertFalse(is_cloud("cloudy-model:7b"))
+        installed = [{"name": "minimax-m3:cloud", "size": 0}, {"name": "gemma3:4b", "size": 3 * 10 ** 9}]
+        self.assertEqual(pick_best(installed, vision=False), "gemma3:4b")
+        self.assertEqual(pick_best(installed[:1], vision=False), "")
+        self.assertEqual(pick_best([{"name": "qwen3.5:9b", "size": 6 * 10 ** 9},
+                                    {"name": "gemma3:4b", "size": 3 * 10 ** 9}], vision=False), "gemma3:4b")
+
 
 def make_docx(path: Path, body: str, footer: str = "", extra_document_xml: str = "") -> None:
     ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
