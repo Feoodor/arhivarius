@@ -43,7 +43,7 @@ def refine(config: dict, rel_path: str, previous: dict | None = None,
            comment: str = "") -> dict:
     """Возвращает {new_name, target_path, name_confidence, move_confidence,
     confidence, reason, review, seconds, model}."""
-    from .llm import OllamaClient
+    from .llm import client_from_config
     from .pipeline import context_pack_for
     from .prompts import RESPONSE_SCHEMA, build_system
 
@@ -62,10 +62,8 @@ def refine(config: dict, rel_path: str, previous: dict | None = None,
     images = _maybe_image(config, rel, None)
     # Картинку/PDF-скан отдаём vision-модели на её (меньшем) окне; иначе — текстовой.
     if images:
-        model = llm_cfg.get("model_vision", llm_cfg.get("model_text", "gemma3:12b"))
         eff_ctx = min(int(llm_cfg.get("num_ctx", 16384)), int(llm_cfg.get("vision_num_ctx", 16384)))
     else:
-        model = llm_cfg.get("model_text", "gemma3:12b")
         eff_ctx = int(llm_cfg.get("num_ctx", 16384))
 
     # Безопасный бюджет карты: сколько влезает вместе с инструкцией и текстом файла
@@ -76,19 +74,13 @@ def refine(config: dict, rel_path: str, previous: dict | None = None,
     map_budget = min(map_budget, int(config.get("folders", {}).get("budget_chars", 22000)))
     item, data, pack, _index = context_pack_for(config, rel, budget_chars=map_budget)
 
-    client = OllamaClient(
-        base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-        model=model,
-        num_ctx=eff_ctx,
-        num_predict=max(1400, int(llm_cfg.get("num_predict", 800)) * 2),
-        temperature=0.2,
-        top_p=float(llm_cfg.get("top_p", 0.9)),
-        keep_alive=llm_cfg.get("keep_alive", "30m"),
-        timeout=int(llm_cfg.get("timeout_seconds", 900)),
-        cache_policy=llm_cfg.get("cache_policy", "none"),
-        structured=True,
-        retries=1,
-    )
+    from .models import prepare
+    client = prepare(
+        client_from_config(config, "vision" if images else "text",
+                           num_predict=max(1400, int(llm_cfg.get("num_predict", 800)) * 2),
+                           temperature=0.2, cache_policy=llm_cfg.get("cache_policy", "none"),
+                           structured=True, retries=1),
+        vision=bool(images))
     previous = previous or {}
     neigh_current = _listing(config, rel.rpartition("/")[0])
     neigh_target = _listing(config, str(previous.get("Целевой путь", ""))) if previous.get("Целевой путь") else ""

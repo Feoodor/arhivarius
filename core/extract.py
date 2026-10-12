@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import codecs
 import html
 import re
 import zipfile
@@ -15,7 +16,7 @@ from pathlib import Path
 
 TEXT_EXT = {".txt", ".md", ".csv", ".tsv", ".log", ".ini", ".json", ".xml", ".html", ".htm"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic"}
-LEGACY_EXT = {".doc", ".rtf", ".odt", ".wps", ".pages"}
+LEGACY_EXT = {".doc", ".wps", ".pages"}           # .rtf и .odt читаем сами
 MEDIA_EXT = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 OFFICE_EXT = {".docx", ".xlsx", ".xlsm", ".pptx", ".docm"}
 IGNORED_PREFIX = re.compile(r"^(~\$|._)")
@@ -59,6 +60,16 @@ class Extracted:
         return bool(self.text.strip())
 
 
+def fix_surrogates(text: str) -> str:
+    """Склеить пары суррогатов (эмодзи из RTF вида \\u-10179?\\u-8704?), одиночные заменить на «�»:
+    строка с суррогатами не кодируется в UTF-8, и запрос к модели падал бы целиком."""
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
 def clean_ws(value: str) -> str:
     value = re.sub(r"\r\n?", "\n", value)
     value = re.sub(r"[ \t\u00a0]+", " ", value)
@@ -90,31 +101,197 @@ def pick_dates(text: str) -> tuple[list[str], list[str]]:
     return years, sorted(set(dates))[:16]
 
 
-def read_text_file(path: Path, limit: int) -> str:
-    raw = path.read_bytes()[: limit * 8]
-    for enc in ("utf-8-sig", "utf-8", "cp1251", "koi8-r", "utf-16", "cp866"):
+# частые русские куски: в правильной кодировке их много, в неправильной почти нет
+_COMMON = (" и ", " в ", " на ", " не ", " по ", " что ", " для ", " от ", " с ", " к ", "ени", "ого",
+           "ост", "ств", "ние", "ова", "ать", "ами", "ото", "ают", "ной", "ому", "ний")
+
+
+def _legacy_score(text: str) -> float:
+    """Насколько текст похож на русский: частые слова вверх, «мусорные» буквы и псевдографика вниз."""
+    low = text.casefold()
+    common = sum(low.count(w) for w in _COMMON)
+    junk = 0
+    for ch in text:
+        code = ord(ch)
+        if 0x2500 <= code <= 0x259F:                       # псевдографика: так выглядит cp866 в чужой кодировке
+            junk += 1
+        elif code > 127 and ch.isalpha() and not (0x410 <= code <= 0x44F or ch in "ЁёіІїЇєЄґҐўЎ"):
+            junk += 1                                      # Ђ, Ѓ, Ï… — в нормальном тексте их нет (і ї є ґ ў — белорусские/украинские)
+    cyr_lower = sum(1 for ch in low if "а" <= ch <= "я")
+    return common * 3 + cyr_lower * 0.05 - junk * 6
+
+
+def _utf16_order(head: bytes) -> str:
+    """UTF-16 без BOM: латиница даёт нулевые байты, кириллица — байт 0x04 (старший байт U+04xx) через один."""
+    if len(head) < 8:
+        return ""
+    evens, odds = head[0::2], head[1::2]
+    if head.count(b"\x00") > len(head) * 0.25:
+        return "utf-16-le" if odds.count(0) > evens.count(0) else "utf-16-be"
+    if odds.count(4) > len(odds) * 0.3:
+        return "utf-16-le"
+    if evens.count(4) > len(evens) * 0.3:
+        return "utf-16-be"
+    return ""
+
+
+def decode_text(raw: bytes, truncated: bool = False) -> str:
+    """Байты текстового файла → строка. Понимает BOM, UTF-16 без BOM, обрезанный UTF-8 и русские 8-битные.
+
+    Файл мы читаем КУСКОМ (первые N КБ), поэтому хвост мог оборваться посреди символа — это не повод
+    считать файл не-UTF-8 и читать его как cp1251 (раньше так и было: получался мусор)."""
+    if raw.startswith(codecs.BOM_UTF8):
+        return raw[3:].decode("utf-8", errors="ignore")
+    if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return raw[: len(raw) // 4 * 4].decode("utf-32", errors="ignore")
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return raw[: len(raw) // 2 * 2].decode("utf-16", errors="ignore")
+    order = _utf16_order(raw[:4000])
+    if order:
+        return raw[: len(raw) // 2 * 2].decode(order, errors="ignore")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        if truncated and exc.end >= len(raw) - 3 and exc.start > 0:
+            return raw[: exc.start].decode("utf-8", errors="ignore")      # оборван последний символ
+    best_text, best_score = "", None
+    for enc in ("cp1251", "cp866", "koi8-r"):             # cp1251 первой: ничья — её выигрыш
         try:
-            return raw.decode(enc)
+            text = raw.decode(enc)
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="replace")
+        score = _legacy_score(text)
+        if best_score is None or score > best_score + max(2.0, abs(best_score) * 0.25):
+            best_text, best_score = text, score
+    return best_text or raw.decode("utf-8", errors="replace")
+
+
+def read_text_file(path: Path, limit: int) -> str:
+    cap = limit * 8
+    with path.open("rb") as stream:
+        raw = stream.read(cap + 1)
+    truncated = len(raw) > cap                 # файл длиннее куска: хвост мог оборваться посреди символа
+    return decode_text(raw[:cap], truncated)
 
 
 def docx_text(path: Path) -> str:
+    """Текст docx: основной документ, колонтитулы (там номера и даты), без служебных полей и удалённого."""
     parts = []
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
-        for member in ("word/document.xml",) + tuple(
-            n for n in names if n.startswith("word/header") or n.startswith("word/footerr")
-        ):
+        members = ["word/document.xml"] + sorted(
+            n for n in names if re.match(r"word/(header|footer)\d*\.xml$", n))
+        for member in members:
             if member not in names:
                 continue
             xml = archive.read(member).decode("utf-8", errors="replace")
+            xml = re.sub(r"<w:instrText[^>]*>.*?</w:instrText>", "", xml, flags=re.S)   # PAGE, HYPERLINK…
+            xml = re.sub(r"<w:del\b[^>]*/>", "", xml)                                  # пометка <w:del/> без тела
+            xml = re.sub(r"<w:del\b[^>]*>.*?</w:del>", "", xml, flags=re.S)           # правки «удалено»
             xml = re.sub(r"<w:tab[^>]*/>", "\t", xml)
-            xml = re.sub(r"</w:p>|</w:tr>|</w:tc>", "\n", xml)
+            xml = re.sub(r"<w:br[^>]*/>|<w:cr/>", "\n", xml)
+            xml = re.sub(r"</w:p>|</w:tr>", "\n", xml)
+            xml = re.sub(r"</w:tc>", "\t", xml)
             xml = re.sub(r"<[^>]+>", "", xml)
             parts.append(html.unescape(xml))
     return "\n".join(parts)
+
+
+_RTF_SKIP = {"fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "themedata", "colorschememapping",
+             "latentstyles", "datastore", "listtable", "listoverridetable", "rsidtbl", "generator",
+             "fldinst", "xmlnstbl", "mmathPr", "header", "footer", "headerl", "headerr", "footerl", "footerr"}
+
+
+def rtf_text(path: Path, limit: int = 3_000_000) -> str:
+    """Текст RTF без внешних библиотек: \\'hh (однобайтовая кодировка), \\uN, абзацы, служебные группы."""
+    with path.open("rb") as stream:
+        src = stream.read(limit).decode("latin-1")
+    cp_match = re.search(r"\\ansicpg(\d+)", src[:2000])
+    codepage = f"cp{cp_match.group(1)}" if cp_match else "cp1251"
+    try:
+        codecs.lookup(codepage)
+    except LookupError:
+        codepage = "cp1251"                                # \ansicpg10000 и прочая экзотика
+    out: list[str] = []
+    stack: list[tuple[bool, int]] = []
+    ignorable, uc, skip = False, 1, 0
+    i, n = 0, len(src)
+    word_re = re.compile(r"([A-Za-z]+)(-?\d+)? ?")
+    while i < n:
+        ch = src[i]
+        if ch == "{":
+            stack.append((ignorable, uc))
+            i += 1
+        elif ch == "}":
+            ignorable, uc = stack.pop() if stack else (False, 1)
+            i += 1
+        elif ch == "\\":
+            i += 1
+            if i >= n:
+                break
+            nxt = src[i]
+            if nxt in "\\{}":
+                if not ignorable and skip == 0:
+                    out.append(nxt)
+                elif skip:
+                    skip -= 1
+                i += 1
+            elif nxt == "'":
+                code = src[i + 1:i + 3]
+                i += 3
+                if skip:
+                    skip -= 1
+                elif not ignorable:
+                    try:
+                        out.append(bytes([int(code, 16)]).decode(codepage, errors="replace"))
+                    except ValueError:
+                        pass
+            elif nxt == "*":
+                ignorable = True
+                i += 1
+            elif nxt.isascii() and nxt.isalpha():
+                match = word_re.match(src, i)
+                word, num = match.group(1), match.group(2)
+                i = match.end()
+                if word in ("par", "line", "row", "sect", "page"):
+                    out.append("\n") if not ignorable else None
+                elif word == "tab":
+                    out.append("\t") if not ignorable else None
+                elif word == "cell":
+                    out.append("\t") if not ignorable else None
+                elif word == "u" and num is not None:
+                    if not ignorable:
+                        code = int(num)
+                        try:
+                            out.append(chr(code + 65536 if code < 0 else code))
+                        except (ValueError, OverflowError):
+                            pass                           # битый код символа
+                    skip = uc
+                elif word == "uc" and num is not None:
+                    uc = int(num)
+                elif word in _RTF_SKIP:
+                    ignorable = True
+            else:
+                i += 1                                        # \~ \- \_ и прочие знаки
+        elif ch in "\r\n":
+            i += 1
+        else:
+            if skip:
+                skip -= 1
+            elif not ignorable:
+                out.append(ch)
+            i += 1
+    return fix_surrogates(clean_ws("".join(out)))
+
+
+def odt_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        xml = archive.read("content.xml").decode("utf-8", errors="replace")
+    xml = re.sub(r"<text:s\b[^>]*/>", " ", xml)
+    xml = re.sub(r"<text:tab/>", "\t", xml)
+    xml = re.sub(r"<text:line-break/>|</text:p>|</text:h>|</table:table-row>", "\n", xml)
+    xml = re.sub(r"</table:table-cell>", "\t", xml)
+    return html.unescape(re.sub(r"<[^>]+>", "", xml))
 
 
 def xlsx_text(path: Path, max_rows: int = 120) -> str:
@@ -251,9 +428,18 @@ def extract(path: Path, content_chars: int = 3200, max_pdf_pages: int = 12,
         if ext in TEXT_EXT:
             res.kind = "text"
             res.text = read_text_file(path, content_chars)
-        elif ext == ".docx":
+        elif ext in {".docx", ".docm"}:
             res.kind = "office"
             res.text = docx_text(path)
+        elif ext == ".rtf":
+            res.kind = "office"
+            res.text = rtf_text(path)
+            if len(res.text.strip()) < 15:                    # не RTF по сути (пустой/картинка)
+                res.kind, res.force_review = "legacy", True
+                res.note = "RTF без читаемого текста — сначала конвертировать в docx/pdf"
+        elif ext == ".odt":
+            res.kind = "office"
+            res.text = odt_text(path)
         elif ext in {".xlsx", ".xlsm"}:
             res.kind = "office"
             res.text = xlsx_text(path)
@@ -317,6 +503,7 @@ def extract(path: Path, content_chars: int = 3200, max_pdf_pages: int = 12,
             if res.kind == "pdf-scan":
                 res.kind = "pdf-ocr"
 
+    res.text = fix_surrogates(res.text)
     years, dates = pick_dates(res.text + " " + path.name)
     res.years, res.dates = years, dates
     multi = multi_doc_markers(res.text)

@@ -4,8 +4,8 @@
 # Файл читается PyInstaller при сборке (параметр version= в .spec).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
       StringTable('040904B0', [
         StringStruct('CompanyName',      'Theosis'),
         StringStruct('FileDescription',  'Архивариус. Разработан Фёдором Москальчуком'),
-        StringStruct('FileVersion',      '1.0.3'),
+        StringStruct('FileVersion',      '1.1.0'),
         StringStruct('InternalName',     'Архивариус'),
         StringStruct('LegalCopyright',   '© 2026 Фёдор Москальчук'),
         StringStruct('OriginalFilename', 'Архивариус.exe'),
         StringStruct('ProductName',      'Архивариус'),
-        StringStruct('ProductVersion',   '1.0.3'),
+        StringStruct('ProductVersion',   '1.1.0'),
         StringStruct('Comments',         'Разработчик: Фёдор Москальчук'),
         StringStruct('Author',           'Фёдор Москальчук')
       ])

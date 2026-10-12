@@ -17,6 +17,7 @@ from tkinter import messagebox
 from core import folders_ops, folder_router
 from ui import i18n as I
 from ui import theme as T
+from ui.dialogs import open_path
 
 
 class _ParentedBox:
@@ -53,33 +54,45 @@ class FoldersWindow(tk.Toplevel):
 
     # ------------------------------------------------------------- каркас
     def _build(self) -> None:
-        bar = tk.Frame(self, bg=T.BG_TOP)
+        bar = T.Flow(self, bg=T.BG_TOP)
         bar.pack(fill="x", padx=14, pady=(10, 4))
-        T.Pill(bar, I.tr("↻ обновить всё"), command=self.refresh_all, style="ghost").pack(side="left")
-        T.Pill(bar, I.tr("Откатить последнюю пачку"), command=self.undo_last, style="ghost").pack(side="left", padx=6)
-        T.Pill(bar, "Журнал folder_ops.csv",
-               command=lambda: self._open_file(self.config["output_path"] / folders_ops.JOURNAL_NAME),
-               style="ghost").pack(side="left")
-        self.status = tk.Label(bar, text="", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 9))
-        self.status.pack(side="right")
+        for label, command in (
+                (I.tr("↻ обновить всё"), self.refresh_all),
+                (I.tr("Откатить последнюю пачку"), self.undo_last),
+                ("Журнал folder_ops.csv",
+                 lambda: self._open_file(self.config["output_path"] / folders_ops.JOURNAL_NAME))):
+            bar.add(T.Pill(bar, label, command=command, style="ghost", bg=T.BG_TOP))
+        self.status = tk.Label(bar, text="", bg=T.BG_TOP, fg=T.MUTED, font=("Segoe UI", 9),
+                               anchor="w", justify="left")
+        bar.add(self.status)
         self.scroller = T.Scrollable(self, bg=T.BG_TOP)
         self.scroller.pack(fill="both", expand=True, padx=14, pady=(0, 12))
 
     def _card(self, title: str) -> tk.Frame:
         card = T.Card(self.scroller.body, padding=14, tone=T.CARD)
         card.pack(fill="x", pady=(0, 12))
-        card.inner.pack(fill="x")
         tk.Label(card.inner, text=title, bg=T.CARD, fg=T.INK,
                  font=("Segoe UI Semibold", 14)).pack(anchor="w", pady=(0, 8))
         return card.inner
 
+    def _check_row(self, card, text: str, var: tk.BooleanVar, fg: str = T.INK, extra=None) -> tk.Frame:
+        """Строка с галочкой: текст переносится по ширине окна, дополнительная кнопка — справа."""
+        row = tk.Frame(card, bg=T.CARD_SOFT)
+        row.pack(fill="x", pady=2, padx=4)
+        if extra is not None:
+            extra(row).pack(side="right")
+        check = tk.Checkbutton(row, text=text, variable=var, bg=T.CARD_SOFT, fg=fg,
+                               activebackground=T.CARD_SOFT, selectcolor=T.CARD, anchor="w",
+                               font=("Segoe UI", 10), wraplength=700, justify="left")
+        check.pack(side="left", fill="x", expand=True)
+        row.bind("<Configure>", lambda e: check.configure(wraplength=max(260, e.width - 200)), add="+")
+        return row
+
     def _open_file(self, path: Path) -> None:
         try:
-            import os
-            if path.exists():
-                os.startfile(str(path))  # type: ignore[attr-defined]
-            else:
-                self.msg.showinfo("Журнал", "Файл журнала ещё не создан.")
+            open_path(path)
+        except FileNotFoundError:
+            self.msg.showinfo("Журнал", "Файл журнала ещё не создан.")
         except OSError as exc:
             self.log(f"не открыл журнал: {exc}")
 
@@ -112,6 +125,7 @@ class FoldersWindow(tk.Toplevel):
 
     # ------------------------------------------------------------- разделы
     def refresh_all(self) -> None:
+        position = self.scroller.canvas.yview()[0]          # после действия не прыгаем в начало списка
         for child in list(self.scroller.body.winfo_children()):
             child.destroy()
         self._empty, self._merges, self._nav = [], [], []
@@ -119,8 +133,8 @@ class FoldersWindow(tk.Toplevel):
         self._build_merges()
         self._build_navigator()
         self._build_taxonomy()
+        self.after(60, lambda: self.scroller.canvas.yview_moveto(position))
 
-    # пустые ───────────────────────────────────────────────────────────────
     def _build_empties(self) -> None:
         card = self._card(I.tr("🧹 Пустые папки"))
         try:
@@ -129,15 +143,9 @@ class FoldersWindow(tk.Toplevel):
             tk.Label(card, text=f"нет доступа к диску: {exc}", bg=T.CARD, fg=T.WARN).pack(anchor="w")
             return
         for rel in candidates:
-            row = tk.Frame(card, bg=T.CARD_SOFT)
-            row.pack(fill="x", pady=2, padx=4)
             var = tk.BooleanVar(value=False)
-            tk.Checkbutton(row, text=rel, variable=var, bg=T.CARD_SOFT, fg=T.INK,
-                           activebackground=T.CARD_SOFT, selectcolor=T.CARD, anchor="w",
-                           font=("Segoe UI", 10), wraplength=920, justify="left").pack(
-                side="left", fill="x", expand=True)
-            T.Pill(row, "не трогать", command=lambda r=rel: self._mark_keep(r, True),
-                   style="ghost").pack(side="right")
+            self._check_row(card, rel, var, extra=lambda row, r=rel: T.Pill(
+                row, "не трогать", command=lambda: self._mark_keep(r, True), style="ghost", bg=T.CARD_SOFT))
             self._empty.append((var, rel))
         for rel in kept:
             row = tk.Frame(card, bg=T.CARD_SOFT)
@@ -202,13 +210,8 @@ class FoldersWindow(tk.Toplevel):
             text = (f"{g['canonical']}  ←  " + "; ".join(dups[:3])
                     + (f" (+{len(dups) - 3})" if len(dups) > 3 else "")
                     + f"   · перемещений: {len(moves)}")
-            row = tk.Frame(card, bg=T.CARD_SOFT)
-            row.pack(fill="x", pady=2, padx=4)
             var = tk.BooleanVar(value=False)
-            tk.Checkbutton(row, text=text, variable=var, bg=T.CARD_SOFT, fg=T.INK,
-                           activebackground=T.CARD_SOFT, selectcolor=T.CARD, anchor="w",
-                           font=("Segoe UI", 10), wraplength=920, justify="left").pack(
-                side="left", fill="x", expand=True)
+            self._check_row(card, text, var)
             self._merges.append((var, g))
         if not shown:
             tk.Label(card, text="двойников, годных к слиянию, не найдено", bg=T.CARD,
@@ -244,18 +247,18 @@ class FoldersWindow(tk.Toplevel):
     # навигатор ────────────────────────────────────────────────────────────
     def _build_navigator(self) -> None:
         card = self._card(I.tr("🧭 Папки из «Разобрать» → постоянное место"))
-        head = tk.Frame(card, bg=T.CARD)
+        head = T.Flow(card, bg=T.CARD)
         head.pack(fill="x")
-        T.Pill(head, I.tr("опросить модель по всем папкам зоны"), command=self.run_navigator,
-               style="accent").pack(side="left")
-        T.Pill(head, I.tr("⏱ замерить скорость (текст + фото)"), command=self.run_speed_probe,
-               style="ghost").pack(side="left", padx=6)
+        head.add(T.Pill(head, I.tr("опросить модель по всем папкам зоны"), command=self.run_navigator,
+                        style="accent", bg=T.CARD))
+        head.add(T.Pill(head, I.tr("⏱ замерить скорость (текст + фото)"), command=self.run_speed_probe,
+                        style="ghost", bg=T.CARD))
         self.probe_label = tk.Label(head, text="", bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9))
-        self.probe_label.pack(side="left")
-        tk.Label(head, text="отдельный контекстный проход: имена папок и файлов; текст читается "
-                            "только при коллизии одноимённых мест; план — folder_plan.json",
-                 bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9), wraplength=780,
-                 justify="left").pack(side="left", padx=8)
+        head.add(self.probe_label)
+        head.add(tk.Label(head, text="отдельный контекстный проход: имена папок и файлов; текст читается "
+                                     "только при коллизии одноимённых мест; план — folder_plan.json",
+                          bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 9), justify="left", anchor="w"),
+                 stretch=True)
         plan = folder_router.load_plan_safe(self.config)
         try:   # снимок читаем ОДИН раз, а не на каждую строку плана
             snap_for_stats = json.loads(
@@ -281,14 +284,8 @@ class FoldersWindow(tk.Toplevel):
                 text += "\n   " + stat_line
             if entry.get("решение"):
                 text += f"   ✔ {entry['решение']}"
-            row = tk.Frame(card, bg=T.CARD_SOFT)
-            row.pack(fill="x", pady=2, padx=4)
             var = tk.BooleanVar(value=False)
-            tk.Checkbutton(row, text=text, variable=var, bg=T.CARD_SOFT,
-                           fg=T.GOOD if not entry.get("note") else T.WARN,
-                           activebackground=T.CARD_SOFT, selectcolor=T.CARD, anchor="w",
-                           font=("Segoe UI", 10), wraplength=920, justify="left").pack(
-                side="left", fill="x", expand=True)
+            self._check_row(card, text, var, fg=T.GOOD if not entry.get("note") else T.WARN)
             self._nav.append((var, entry))
         if any(e.get("section") for e in plan):
             foot = tk.Frame(card, bg=T.CARD)

@@ -218,7 +218,7 @@ def propose_folder(config: dict, dossier: dict, collisions: list[str], index, cl
 def propose_all(config: dict, log=None, limit: int = 30) -> list[dict]:
     """Пройтись по папкам верхнего уровня всех зон «Разобрать»; сохранить план."""
     from . import pipeline
-    from .llm import OllamaClient
+    from .llm import client_from_config
     from .folders import curated_root_sections
 
     log = log or (lambda m: None)
@@ -226,15 +226,10 @@ def propose_all(config: dict, log=None, limit: int = 30) -> list[dict]:
     snapshot, index = pipeline._snapshot_and_index(config)
     roots = list(index.top_levels)
     config["top_level_roots"] = curated_root_sections(index, config)
-    client = OllamaClient(
-        base_url=llm_cfg.get("base_url", "http://127.0.0.1:11434"),
-        model=llm_cfg.get("model_text", "gemma3:12b"),
-        num_ctx=min(int(llm_cfg.get("num_ctx", 16384)), 20480),
-        num_predict=260, temperature=0.1, top_p=0.9,
-        keep_alive=llm_cfg.get("keep_alive", "30m"),
-        timeout=int(llm_cfg.get("timeout_seconds", 900)),
-        cache_policy=llm_cfg.get("cache_policy", "nonce"),
-        structured=True, retries=1)
+    from .models import prepare
+    client = prepare(client_from_config(
+        config, "text", num_ctx=min(int(llm_cfg.get("num_ctx", 16384)), 20480),
+        num_predict=260, temperature=0.1, top_p=0.9, structured=True, retries=1), log=log)
     old_plan = {row.get("откуда"): row for row in load_plan_safe(config)}
     folders = intake_top_folders(config, snapshot)[: max(1, int(limit))]
     rows: list[dict] = []

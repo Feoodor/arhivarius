@@ -156,10 +156,60 @@ def _auto(row: dict) -> bool:
     return bool(row.get("Целевой путь") and row.get("Новое имя")) and str(row.get("Тип операции")) != "без изменений"
 
 
+MANUAL_NAME = "manual_edits.json"
+
+
+def _norm_rel(path: str) -> str:
+    return (path or "").replace("\\", "/").strip("/")
+
+
+def load_manual(output: Path) -> set[str]:
+    """Пути, чьи имя/папку человек правил руками: повторный разбор их не перезапишет."""
+    try:
+        data = json.loads((Path(output) / MANUAL_NAME).read_text("utf-8"))
+        return {_norm_rel(p) for p in data} if isinstance(data, list) else set()
+    except (OSError, ValueError):
+        return set()
+
+
+def mark_manual(output: Path, rel: str) -> None:
+    rel = _norm_rel(rel)
+    if not rel:
+        return
+    current = load_manual(output)
+    if rel in current:
+        return
+    current.add(rel)
+    target = Path(output) / MANUAL_NAME
+    try:
+        Path(output).mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(sorted(current), ensure_ascii=False, indent=1), "utf-8")
+        tmp.replace(target)
+    except OSError:
+        pass          # реестр — страховка; без него строка с комментарием/отметкой всё равно защищена
+
+
+def is_touched(row: dict, manual: set[str] | None = None) -> bool:
+    """Строку правил(а) человек: комментарий, ярлык, отметка «Применить»=TRUE, решение по ней
+    или явная правка имени/папки (реестр manual_edits.json).
+
+    «Применить»=FALSE — просто состояние по умолчанию, это не правка: иначе повторный разбор
+    («разобрать заново», перезапуск после сбоя) не обновлял бы ни одной строки карты."""
+    if (row.get("Комментарий") or "").strip() or (row.get("Путь ярлыка") or "").strip():
+        return True
+    if (row.get("Применить") or "").strip().upper() == "TRUE":
+        return True
+    if manual and _norm_rel(row.get("Текущий путь", "")) in manual:
+        return True
+    return (row.get("Статус") or "").strip() in {"перенесено", "отказ", "без изменений"}
+
+
 def merge_suggestions(
     map_rows: list[dict],
     records: list[dict],
     overwrite: bool = False,
+    manual: set[str] | None = None,
 ) -> tuple[list[dict], int, int, int]:
     """Обновить карту результатами разбора, не затирая ручные правки.
 
@@ -176,7 +226,7 @@ def merge_suggestions(
             index[key] = new_row
             added += 1
             continue
-        touched = any(old.get(field) for field in HUMAN_FIELDS) or old.get("Статус") in {"перенесено", "отказ"}
+        touched = is_touched(old, manual)
         if touched and not overwrite:
             skipped += 1
             continue

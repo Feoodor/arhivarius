@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import queue
-import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -18,18 +17,17 @@ from tkinter import filedialog, messagebox, ttk
 
 from core.extract import IMAGE_EXT, extract
 from ui import theme as T
+from ui.dialogs import reveal_path, text_window
 
 
 def reveal_in_explorer(path: Path) -> None:
     if not Path(path).exists():
         messagebox.showwarning("Нет файла", "Файла нет на диске — возможно, он уже перенесён.")
         return
-    if sys.platform == "win32":
-        subprocess.Popen(["explorer", "/select,", str(path)])
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", "-R", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(Path(path).parent)])
+    try:
+        reveal_path(path)
+    except Exception as exc:  # noqa: BLE001
+        messagebox.showerror("Проводник", f"Не удалось открыть: {exc}")
 
 
 class FileViewer(tk.Toplevel):
@@ -163,18 +161,17 @@ class FileViewer(tk.Toplevel):
             wrapped.bind("<Configure>", lambda e: wrapped.configure(wraplength=max(400, e.width)))
 
         # нижняя панель кнопок крепим ДО body, иначе body с expand=True заберёт
-        # всё место и кнопки перекроются (их содержимое добавим ниже)
-        buttons = tk.Frame(self, bg=T.BG_TOP)
+        # всё место и кнопки перекроются; Flow переносит кнопки, если окно узкое
+        buttons = T.Flow(self, bg=T.BG_TOP)
         buttons.pack(side="bottom", fill="x", padx=18, pady=(0, 12))
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(side="top", fill="both", expand=True, padx=18, pady=(8, 8))
 
         # ------------------------------------------------- левая колонка: содержимое
-        left_card = T.Card(body, padding=10, fill=True)
+        left_card = T.Card(body, padding=10)
         body.add(left_card, weight=7)
         inner = left_card.inner
-        inner.pack(fill="both", expand=True)
         cap = tk.Frame(inner, bg=T.CARD)
         cap.pack(fill="x", pady=(0, 6))
         tk.Label(cap, text="📄 Содержимое", bg=T.CARD, fg=T.MUTED,
@@ -203,19 +200,17 @@ class FileViewer(tk.Toplevel):
         self.image_label.bind("<Configure>",
                               lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", self._canvas_resized)
+        self.canvas._page_scroll = True               # колесо (и Linux Button-4/5) крутит холст через ui.input
         self.canvas.bind("<MouseWheel>", self._canvas_wheel)
         self.canvas.bind("<Double-1>", lambda _e: self._zoom_reset())
 
         # ------------------------------------------------ правая колонка: решение
-        right_card = T.Card(body, padding=10, fill=True)
+        right_card = T.Card(body, padding=10)
         body.add(right_card, weight=3)
-        right_card.inner.pack(fill="both")
         panel = T.Scrollable(right_card.inner, bg=T.CARD)
         panel.pack(fill="both", expand=True)
-        panel.grab_wheel(True)
         self._panel = panel
         p = panel.body
-        p.pack(fill="x")
 
         def section(text: str) -> None:
             tk.Label(p, text=text, bg=T.CARD, fg=T.MUTED,
@@ -298,18 +293,17 @@ class FileViewer(tk.Toplevel):
         p.bind("<Configure>", _fit_right_wraps)
         self.after(150, _fit_right_wraps)
 
-        T.Pill(buttons, "Открыть в проводнике", command=lambda: reveal_in_explorer(self.path),
-               style="ghost", bg=T.BG_TOP).pack(side="left")
-        T.Pill(buttons, "Показать промпт", command=self.show_prompt, style="ghost",
-               bg=T.BG_TOP).pack(side="left", padx=6)
-        self.refine_pill = T.Pill(buttons, "🔬 Перепроверить глубже", command=self.refine_now,
-                                  style="good", bg=T.BG_TOP)
-        self.refine_pill.pack(side="left", padx=6)
-        T.Pill(buttons, "Отмена", command=self.destroy, style="quiet", bg=T.BG_TOP).pack(side="right")
-        T.Pill(buttons, "Сохранить и закрыть", command=self.save, style="accent",
-               bg=T.BG_TOP).pack(side="right", padx=6)
-        T.Pill(buttons, "📦 Применить сейчас", command=self.apply_now, style="good",
-               bg=T.BG_TOP).pack(side="right", padx=6)
+        def button(text: str, command, style: str = "ghost") -> T.Pill:
+            pill = T.Pill(buttons, text, command=command, style=style, bg=T.BG_TOP)
+            buttons.add(pill)
+            return pill
+
+        button("Сохранить и закрыть", self.save, "accent")
+        button("📦 Применить сейчас", self.apply_now, "good")
+        self.refine_pill = button("🔬 Перепроверить глубже", self.refine_now, "good")
+        button("Показать промпт", self.show_prompt)
+        button("Открыть в проводнике", lambda: reveal_in_explorer(self.path))
+        button("Отмена", self.destroy, "quiet")
 
         # Перенос текста в правой колонке под фактическую ширину панели — чтобы при
         # узком окне ничего не уезжало за край; плюс стартовое разделение колонок.
@@ -400,10 +394,11 @@ class FileViewer(tk.Toplevel):
         self._pil_img = None
         self.zoom_bar.pack_forget()
         self._reset_left()
+        self.preview.pack(fill="both", expand=True)       # _reset_left его скрыл — без этого превью не видно
         self.preview.configure(state="normal")
         self.preview.delete("1.0", "end")
         self.preview.insert("1.0", text or "(пусто)")
-        self.preview.edit_reset()
+        self.preview.mark_set("insert", "1.0")
 
     # ------------------------------------------------------------------- zoom
     def _show_pil(self, image) -> None:
@@ -544,6 +539,11 @@ class FileViewer(tk.Toplevel):
 
     def _poll_refine(self) -> None:
         try:
+            if not self.winfo_exists():
+                return                       # окно закрыли, пока модель думала
+        except tk.TclError:
+            return
+        try:
             kind, payload = self._refine_queue.get_nowait()
         except queue.Empty:
             self.after(200, self._poll_refine)
@@ -617,24 +617,12 @@ class FileViewer(tk.Toplevel):
     def show_prompt(self) -> None:
         from core.pipeline import build_prompt_preview
 
-        text = build_prompt_preview(self.config, self.row.get("Текущий путь", ""))
-        win = tk.Toplevel(self)
-        win.title("Что уходит в модель")
-        win.geometry("1000x700")
-        win.transient(self)
-        frame = tk.Frame(win, bg=T.CARD)
-        frame.pack(fill="both", expand=True)
-        box = tk.Text(frame, wrap="word", font=("Cascadia Mono", 10), padx=14, pady=12,
-                      bg=T.CARD_SOFT, relief="flat", fg=T.INK)
-        box.pack(fill="both", expand=True)
-        box.insert("1.0", text)
-        T.selectable_copy(box)
-        bar = tk.Frame(win, bg=T.BG_TOP)
-        bar.pack(fill="x")
-        T.Pill(bar, "Копировать всё", command=lambda: (box.tag_add("sel", "1.0", "end-1c"),
-                                                       box.event_generate("<Control-c>")),
-               style="ghost", bg=T.BG_TOP).pack(side="left", padx=10, pady=6)
-        T.Pill(bar, "Закрыть", command=win.destroy, style="quiet", bg=T.BG_TOP).pack(side="left", pady=6)
+        try:
+            text = build_prompt_preview(self.config, self.row.get("Текущий путь", ""))
+        except Exception as exc:  # noqa: BLE001 — нет снимка/файла: объясняем, а не молчим
+            messagebox.showerror("Что уходит в модель", f"{type(exc).__name__}: {exc}", parent=self)
+            return
+        text_window(self, "Что уходит в модель", text, size="1000x700")
 
     # ------------------------------------------------------------------ save
     def save(self) -> None:

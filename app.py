@@ -72,7 +72,7 @@ def estimate_prompt_tokens(config: dict) -> dict:
 
 
 def cmd_doctor(config: dict) -> int:
-    from core.llm import OllamaClient
+    from core.llm import client_from_config
 
     problems = list(config.get("problems", []))
     hr("Проверка готовности")
@@ -91,23 +91,35 @@ def cmd_doctor(config: dict) -> int:
             say(f"  {module:<18} НЕТ — {purpose}")
             problems.append(f"нет библиотеки {module}: {purpose}")
 
-    client = OllamaClient(
-        base_url=config["llm"]["base_url"],
-        model=config["llm"]["model_text"],
-        num_ctx=config["llm"]["num_ctx"],
-    )
+    client = client_from_config(config, "text")
     if not client.is_alive():
         say(f"  Ollama            НЕ ОТВЕЧАЕТ на {config['llm']['base_url']}")
         problems.append("Ollama не запущена — откройте приложение Ollama (он слушает 127.0.0.1:11434)")
     else:
-        models = client.list_models()
-        say(f"  Ollama            {config['llm']['base_url']}, моделей: {len(models)}")
-        for wanted in sorted({config["llm"]["model_text"], config["llm"]["model_vision"]}):
-            if wanted in models:
-                say(f"  модель            {wanted} — на месте")
-            else:
-                say(f"  модель            {wanted} — НЕТ (ollama pull {wanted})")
+        details = client.list_models_detailed()
+        models = [d["name"] for d in details]
+        say(f"  Ollama            {client.base_url}, v{client.version() or '?'}, моделей: {len(models)}")
+        for role, wanted in (("текст", config["llm"]["model_text"]), ("зрение", config["llm"]["model_vision"])):
+            have = client.resolve_model(wanted)
+            if not have:
+                say(f"  модель {role:<10} {wanted} — НЕТ (ollama pull {wanted})")
                 problems.append(f"модель {wanted} не скачана")
+                continue
+            caps = client.capabilities(have)
+            limit = client.context_limit(have)
+            say(f"  модель {role:<10} {have} — на месте"
+                + (f" · {', '.join(caps)}" if caps else "")
+                + (f" · контекст до {limit}" if limit else ""))
+            if role == "зрение" and config["llm"].get("vision") and caps and "vision" not in caps:
+                problems.append(f"модель {have} не читает картинки: выберите другую в настройках «Модель для зрения»")
+            if limit and int(config["llm"]["num_ctx"]) > limit:
+                problems.append(f"num_ctx={config['llm']['num_ctx']} больше предела модели {have} ({limit})")
+        from core import models as models_mod
+        absent = models_mod.missing_recommended(models)
+        if absent and not any(models_mod.same_model(config['llm']['model_text'], n) for n in models):
+            best = models_mod.pick_best(details, vision=False, client=client)
+            if best:
+                say(f"  подойдёт вместо неё: {best} (программа возьмёт её сама, но лучше скачать выбранную)")
         loaded = client.loaded()
         if loaded:
             say("  в памяти          " + ", ".join(
@@ -172,15 +184,26 @@ def cmd_duplicates(config: dict) -> int:
 
 
 def cmd_models(config: dict) -> int:
-    from core.llm import OllamaClient
+    from core import models as models_mod
+    from core.llm import client_from_config
 
-    client = OllamaClient(base_url=config["llm"]["base_url"], model=config["llm"]["model_text"])
+    client = client_from_config(config, "text")
     hr("Модели Ollama")
     if not client.is_alive():
         say("  Ollama не отвечает")
         return 1
-    for name in client.list_models():
-        say("  " + name)
+    details = client.list_models_detailed()
+    for item in details:
+        caps = client.capabilities(item["name"])
+        say(f"  {item['name']:<32} {int(item.get('size') or 0) / 1e9:5.1f} ГБ  {', '.join(caps)}")
+    best = models_mod.pick_best(details, vision=True, client=client)
+    if best:
+        say(f"\n  лучшая установленная с глазами: {best}")
+    absent = models_mod.missing_recommended([d["name"] for d in details])
+    if absent:
+        say("\n  можно скачать:")
+        for rec in absent:
+            say(f"    ollama pull {rec['tag']:<14} — {rec['role']}; {rec['why']}")
     return 0
 
 
@@ -257,7 +280,8 @@ def cmd_merge(config: dict) -> int:
         say("  предложений нет — сначала suggest")
         return 1
     rows = mapio.load_map(config["output_path"] / MAP_NAME)
-    rows, added, updated, skipped = mapio.merge_suggestions(rows, records, overwrite=False)
+    rows, added, updated, skipped = mapio.merge_suggestions(
+        rows, records, overwrite=False, manual=mapio.load_manual(config["output_path"]))
     mapio.save_map(config["output_path"] / MAP_NAME, rows)
     stats = mapio.stats(rows)
     say(f"  добавлено {added}, обновлено {updated}, пропущено (ваши правки) {skipped}")

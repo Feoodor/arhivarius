@@ -25,6 +25,8 @@ from .mapio import APPLIED_NAME, MAP_FIELDS, archive_applied, load_map, save_map
 LOG_FIELDS = ["Дата", "Действие", "Исходный путь", "Новый путь", "Статус", "Комментарий"]
 APPLIED = "перенесено"
 SKIPPED = "пропуск"
+WINDOWS = os.name == "nt"
+MAX_PATH = 259          # длиннее проводник Windows и shutil.move без «длинных путей» не осилят
 RESERVED_NAMES = {  # Windows не создаст файл с таким именем ни в одной папке
     "con", "prn", "aux", "nul", "clock$",
     *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10)),
@@ -42,9 +44,16 @@ class Action:
 
 
 def _safe_target(root: Path, rel: str) -> Path:
-    """Относительный путь → абсолютный, с проверкой, что мы не ушли из корня."""
+    """Относительный путь → абсолютный, с проверкой, что мы не ушли из корня.
+
+    Разрешаем (resolve) только ПАПКУ, а имя файла оставляем как просили: на Windows resolve()
+    подставляет регистр имени с диска, и переименование «a.txt» → «A.txt» превращалось
+    в «a_v2.txt» (цель считалась занятой самим файлом)."""
     rel = (rel or "").replace("\\", "/").strip("/")
-    candidate = (root / rel).resolve()
+    full = root / rel
+    if full.name in ("", ".", ".."):
+        raise ValueError(f"путь вне рабочего каталога: {rel}")
+    candidate = full.parent.resolve() / full.name
     try:
         candidate.relative_to(root.resolve())
     except ValueError as exc:
@@ -106,7 +115,15 @@ def build_plan(config: dict, rows: list[dict], only_marked: bool = True) -> list
         if not src.exists():
             plan.append(Action(rel, "нет файла", rel, "", False, "файл не найден — возможно, уже перенесён вручную"))
             continue
+        if WINDOWS and len(str(dst)) > MAX_PATH:
+            plan.append(Action(rel, "слишком длинный путь", rel, "", False,
+                               f"путь длиннее {MAX_PATH} символов — сократите имя или вложенность папок"))
+            continue
         final, renamed = unique_path(dst)
+        if WINDOWS and len(str(final)) > MAX_PATH:            # суффикс _v2 тоже удлиняет путь
+            plan.append(Action(rel, "слишком длинный путь", rel, "", False,
+                               f"путь длиннее {MAX_PATH} символов — сократите имя или вложенность папок"))
+            continue
         same = src.resolve() == final.resolve()
         if (src.parent == dst.parent and src.name != dst.name
                 and src.name.casefold() == dst.name.casefold()):
@@ -187,6 +204,7 @@ def apply_plan(
     """Выполнить план. Возвращает сводку; карта обновляется на месте."""
     root: Path = config["scan_root"]
     output: Path = config["output_path"]
+    output.mkdir(parents=True, exist_ok=True)
     plan = build_plan(config, rows, only_marked)
     batch = batch_id()
     undo: list[dict] = []
@@ -201,15 +219,15 @@ def apply_plan(
         nonlocal undo_journal
         if not new_steps:
             return
-        if undo_journal is None:
-            undo_journal = (output / f"undo_{batch}.jsonl").open("a", encoding="utf-8")
-        for step in new_steps:
-            undo_journal.write(json.dumps(step, ensure_ascii=False) + "\n")
-        undo_journal.flush()
         try:
+            if undo_journal is None:
+                undo_journal = (output / f"undo_{batch}.jsonl").open("a", encoding="utf-8")
+            for step in new_steps:
+                undo_journal.write(json.dumps(step, ensure_ascii=False) + "\n")
+            undo_journal.flush()
             os.fsync(undo_journal.fileno())
         except OSError:
-            pass
+            pass    # пошаговый журнал — страховка; итоговый undo_*.json всё равно будет записан в конце
 
     for position, action in enumerate(plan, 1):
         if progress:
