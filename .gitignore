@@ -32,3 +32,4 @@ folder_ops.csv
 # служебное
 *.whl
 .pytest_cache/
+sysreport.txt

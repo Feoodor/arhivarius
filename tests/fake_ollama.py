@@ -125,7 +125,7 @@ class FakeOllama:
                     return self._send(400, {"error": f'"{payload["model"]}" does not support thinking'})
                 if outer.reject_schema and isinstance(payload.get("format"), dict):
                     return self._send(500, {"error": "failed to load model vocabulary required for format (grammar)"})
-                if payload.get("messages", [{}])[-1].get("images") and \
+                if (payload.get("messages") or [{}])[-1].get("images") and \
                         "vision" not in outer.models.get(payload["model"], []):
                     return self._send(400, {"error": "this model is missing data required for image input"})
                 if action.get("status"):
