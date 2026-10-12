@@ -43,6 +43,18 @@ class Compare(unittest.TestCase):
         self.assertIn("СОВПАДЕНИЕ ПАПОК", text)
         self.assertIn("3/3", text)                      # обе модели положили всё в одни папки
 
+    def test_queue_for_compare_includes_images(self):
+        """Картинки и сканы должны попадать в выборку: без них сравнение зрения бессмысленно."""
+        rel = "Документы/00_Разобрать/scan.png"
+        (self.config["scan_root"] / rel).write_bytes(b"\x89PNG\r\n\x1a\n")      # очередь проверяет, что файл есть
+        picture = dict(self.snapshot["files"][0], path=rel)
+        snap = dict(self.snapshot, files=[*self.snapshot["files"], picture])
+        probe = pipeline.Analyzer(self.config, snap, self.index)
+        plain = probe.queue(pipeline.Filters(limit=100, skip_done=False))
+        media = probe.queue(pipeline.Filters(limit=100, skip_done=False, include_media=True))
+        self.assertNotIn(rel, [i["path"] for i in plain])
+        self.assertIn(rel, [i["path"] for i in media])
+
     def test_compare_does_not_touch_the_map(self):
         cm.run_model(self.config, self.snapshot, self.index, "gemma3:4b", self.files, log=lambda s: None)
         out = self.config["output_path"]

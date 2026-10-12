@@ -146,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         snapshot, prune=sorted(config["excluded_dirs"]) + [config["output_path"].name],
         exclude=config["folders"]["hide_prefixes"])
     probe = pipeline.Analyzer(copy.deepcopy(config), snapshot, index, log=lambda m: None)
-    queue = probe.queue(pipeline.Filters(prefix=args.folder, limit=100000, skip_done=False))
+    queue = probe.queue(pipeline.Filters(prefix=args.folder, limit=100000, skip_done=False,
+                                             include_media=True))   # картинки и сканы — для проверки зрения
     files = sample_queue(queue, args.files)
     if not files:
         print("В очереди нет файлов для разбора (проверьте режим очереди и папку).")
