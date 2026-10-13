@@ -2183,6 +2183,8 @@ class OrganizerApp(tk.Tk):
             try:
                 records = mapio.load_records(self.config["output_path"] / SUGGESTIONS_NAME)
                 self.trash_rows = cleanup.candidates(self.config) + cleanup.mark_from_model(records)
+                known = {row["Путь"] for row in self.trash_rows}
+                self.trash_rows += [row for row in cleanup.from_map(self.config) if row["Путь"] not in known]
             except Exception as exc:
                 if not silent:
                     messagebox.showerror("Корзина", str(exc))
