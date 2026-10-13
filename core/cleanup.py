@@ -120,6 +120,30 @@ def mark_from_model(records: list[dict]) -> list[dict]:
     return rows
 
 
+def from_map(config: dict) -> list[dict]:
+    """Строки карты с операцией «в корзину»: их можно отметить в корзине и убрать из карты."""
+    path = config["output_path"] / MAP_NAME
+    if not path.exists():
+        return []
+    root: Path = config["scan_root"]
+    rows = []
+    for record in load_map(path):
+        rel = str(record.get("Текущий путь") or "").replace("\\", "/").strip("/")
+        if not rel or str(record.get("Тип операции") or "").strip() != TRASH_STATUS:
+            continue
+        source = root / rel
+        rows.append({
+            "Путь": rel,
+            "Имя": Path(rel).name,
+            "Размер": source.stat().st_size if source.is_file() else 0,
+            "Изменён": "",
+            "Причина": str(record.get("Причина") or "")[:300],
+            "Уверенность": str(record.get("Уверенность переноса") or ""),
+            "Отметить": "FALSE",
+        })
+    return rows
+
+
 def write_report(config: dict, rows: list[dict]) -> Path:
     from .scanner import write_csv
 

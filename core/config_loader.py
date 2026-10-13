@@ -28,6 +28,7 @@ DEFAULTS: dict = {
     "mo_target_prefix": "Документы",
     "ui_lang": "ru",
     "llm": {
+        "enabled": True,
         "model_text": "gemma3:12b",
         "model_vision": "gemma3:12b",
         "base_url": "http://127.0.0.1:11434",

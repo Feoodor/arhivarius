@@ -27,6 +27,7 @@ MAP_FIELDS = [
     "Применить",
     "Статус",
     "Комментарий",
+    "Кто предложил",
 ]
 LEGACY_CONF_FIELD = "Уверенность"
 HUMAN_FIELDS = {"Комментарий", "Путь ярлыка", "Применить"}
@@ -129,8 +130,10 @@ def archive_manual(output: Path, row: dict) -> int:
     return 1
 
 
-def as_map_row(record: dict) -> dict:
-    """Запись разбора → строка карты. Флаги и исправления приклеиваем к причине."""
+def as_map_row(record: dict, auto_apply: bool = True, source: str = "") -> dict:
+    """Запись разбора → строка карты. Флаги и исправления приклеиваем к причине.
+
+    auto_apply=False: «Применить» всегда FALSE — переносит только человек, отметив строку."""
     reason = str(record.get("Причина", ""))
     extras = []
     if record.get("_флаги"):
@@ -140,6 +143,7 @@ def as_map_row(record: dict) -> dict:
     if record.get("_ошибка"):
         extras.append("сбой: " + str(record["_ошибка"]))
     row = {key: record.get(key, "") for key in MAP_FIELDS}
+    row["Кто предложил"] = str(record.get("Кто предложил") or source or "")[:120]
     row["Причина"] = " | ".join([reason] + extras)[:900] if extras else reason[:900]
     legacy = record.get(LEGACY_CONF_FIELD, "")
     for col in ("Уверенность имени", "Уверенность переноса"):
@@ -147,7 +151,7 @@ def as_map_row(record: dict) -> dict:
         if (val == "" or val is None) and legacy not in ("", None):
             val = legacy
         row[col] = "" if val in ("", None) else f"{val}"
-    row["Применить"] = "TRUE" if str(row.get("Статус")) == "готово" and _auto(row) else "FALSE"
+    row["Применить"] = "TRUE" if auto_apply and str(row.get("Статус")) == "готово" and _auto(row) else "FALSE"
     return row
 
 
@@ -210,6 +214,8 @@ def merge_suggestions(
     records: list[dict],
     overwrite: bool = False,
     manual: set[str] | None = None,
+    auto_apply: bool = True,
+    source: str = "",
 ) -> tuple[list[dict], int, int, int]:
     """Обновить карту результатами разбора, не затирая ручные правки.
 
@@ -218,7 +224,7 @@ def merge_suggestions(
     index = {(row.get("Текущий путь") or "").replace("\\", "/"): row for row in map_rows}
     added = updated = skipped = 0
     for record in records:
-        new_row = as_map_row(record)
+        new_row = as_map_row(record, auto_apply=auto_apply, source=source)
         key = new_row["Текущий путь"].replace("\\", "/")
         old = index.get(key)
         if old is None:

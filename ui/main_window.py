@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import json
 import queue
+import re
+import subprocess
+import sys
 import threading
 import traceback
 import tkinter as tk
@@ -19,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from core import applier, cleanup, mapio, plugins, scanner
+from core import applier, cleanup, mapio, plugins, scanner, unpack
 from core.config_loader import MAP_NAME, SUGGESTIONS_NAME, load_config, save_config
 from core.folders import FolderIndex
 from core.pipeline import Analyzer, Filters, build_prompt_preview
@@ -35,11 +38,14 @@ PAGES = [
     ("tree", "🌳 Структура"),
     ("prompt", "✨ Промпт"),
     ("trash", "🗑 Корзина"),
+    ("archives", "📦 Архивы"),
     ("plugins", "🧩 Плагины"),
     ("guide", "📖 Инструкция"),
     ("settings", "⚙️ Настройки"),
     ("log", "📜 Журнал"),
 ]
+# Разделы без своих вкладок: открываются кнопками на странице «Настройки», сами страницы сохранены
+HIDDEN_PAGES = ("prompt", "plugins", "guide")
 
 MODES = ("🧹 Разбор завалов", "🧭 Ревизия структуры", "🔍 Вся система", "🪜 Система → потом разбор")
 MODE_KEYS = ("завалы", "ревизия структуры", "проверка системы", "система-затем-разбор")
@@ -194,9 +200,11 @@ class OrganizerApp(tk.Tk):
         self.dot = tk.Canvas(status_row, width=16, height=16, bg=T.BG_TOP, highlightthickness=0)
         self.dot.pack(side="left", padx=(0, 5))
         self.set_dot("#9aa4b2")
-        self.ollama_label = tk.Label(status_row, text="Ollama: проверка…", bg=T.BG_TOP, fg=T.MUTED,
+        self.ollama_label = tk.Label(status_row, text="Локальная модель: проверка…", bg=T.BG_TOP, fg=T.MUTED,
                                      font=("Segoe UI", 11), anchor="e", justify="right")
         self.ollama_label.pack(side="left")
+        self.ollama_toggle = T.Pill(right, "Ollama: выключить", command=self.toggle_ollama, style="ghost", icon="⏻")
+        self.ollama_toggle.pack(anchor="e", pady=(4, 0))
         T.Pill(right, "Открыть результаты", command=lambda: open_path(self.config["output_path"]),
                style="ghost", icon="📂").pack(anchor="e", pady=(6, 0))
         title = tk.Frame(header, bg=T.BG_TOP)
@@ -210,7 +218,7 @@ class OrganizerApp(tk.Tk):
         title.bind("<Configure>", lambda e: tagline.configure(wraplength=max(240, e.width - 8)))
 
         from ui import i18n as I
-        self.tabbar = T.TabBar(self, [(k, I.tr(title)) for k, title in PAGES], command=self._show_page, bg=T.BG_TOP)
+        self.tabbar = T.TabBar(self, [(k, I.tr(title)) for k, title in PAGES if k not in HIDDEN_PAGES], command=self._show_page, bg=T.BG_TOP)
         self.tabbar.pack(fill="x", padx=24, pady=(4, 6))
 
         # строка состояния — до контейнера: на тесном окне именно страница уступает место, а не статус
@@ -235,6 +243,7 @@ class OrganizerApp(tk.Tk):
         self._build_tree(self.pages["tree"].body)
         self._build_prompt(self.pages["prompt"].body)
         self._build_trash(self.pages["trash"].body)
+        self._build_archives(self.pages["archives"].body)
         self._build_plugins(self.pages["plugins"].body)
         self._build_guide(self.pages["guide"].body)
         self._build_settings(self.pages["settings"].body)
@@ -474,14 +483,16 @@ class OrganizerApp(tk.Tk):
 
     # -------------------------------------------------------------------- карта
     def _build_map(self, parent) -> None:
+        # слева направо — порядок работы: отметить, утвердить, проверить, перенести; справа — прочее
         bar = self._toolbar(parent, pady=(0, 2))
-        self._btn(bar, "👁 Смотреть и утвердить", self.view_selected, "accent")
-        self._btn(bar, "✅ Утвердить помеченные", self.approve_marked, "good")
-        self._btn(bar, "Отметить", lambda: self.set_apply(True))
-        self._btn(bar, "Снять", lambda: self.set_apply(False))
+        self._btn(bar, "☑ Отметить", lambda: self.set_apply(True), "good")
+        self._btn(bar, "☐ Снять", lambda: self.set_apply(False))
         self._btn(bar, "☑ Выделить все", self.select_all_rows, "quiet")
+        self._btn(bar, "✅ Утвердить помеченные", self.approve_marked)
         self._btn(bar, "🧪 Пробный перенос", self.show_dry_run)
         self._btn(bar, "🚚 Применить перенос", self.apply_marked, "accent")
+        self._btn(bar, "👁 Смотреть", self.view_selected, "quiet")
+        self._btn(bar, "🗑 В корзину выделенное", self.trash_selected_map_rows, "danger")
 
         tools = tk.Frame(parent, bg=T.BG_TOP)
         tools.pack(fill="x", pady=(4, 6))
@@ -578,13 +589,14 @@ class OrganizerApp(tk.Tk):
         actions = self._toolbar(parent)
         self._btn(actions, "📑 Аудит структуры", lambda: self._open_name("structure_audit.md"), "accent")
         self._btn(actions, "📂 Папки", self.open_folders_window, "good")
+        self._btn(actions, "☑ Выбрать все папки", self.select_all_folders, "quiet")
         self._btn(actions, "📄 План папок", self.make_plan)
         self._btn(actions, "Создать папки из плана", self.create_plan, "good")
         self.plan_note = self._note(actions, "план лежит в structure_plan.txt — правьте его перед созданием")
 
         _card, self.folder_tree = self._table(parent, ("files",), {"files": "Файлов в ветке"},
                                               {"files": 120}, set(), show="tree headings",
-                                              selectmode="browse", height=8, pady=(0, 10))
+                                              selectmode="extended", height=8, pady=(0, 10))
         self.folder_tree.heading("#0", text="Папка")
         self.folder_tree.column("#0", width=420, minwidth=180, stretch=True)
         self.folder_tree.column("files", width=120, minwidth=90, anchor="e", stretch=False)
@@ -592,6 +604,16 @@ class OrganizerApp(tk.Tk):
             ("Копировать путь папки", lambda: uinput.put_on_clipboard(
                 self.folder_tree, "\n".join(self.folder_tree.selection()))),
         ])
+
+    def select_all_folders(self) -> None:
+        """Выделить все папки дерева «Структура», включая вложенные."""
+        items, stack = [], list(self.folder_tree.get_children(""))
+        while stack:
+            item = stack.pop()
+            items.append(item)
+            stack.extend(self.folder_tree.get_children(item))
+        self.folder_tree.selection_set(items)
+        self.status_var.set(f"выделено папок: {len(items)}")
 
     def _tree_open(self, value: bool) -> None:
         stack = list(self.folder_tree.get_children(""))
@@ -804,6 +826,12 @@ class OrganizerApp(tk.Tk):
         self._btn(top, "💾 Сохранить настройки", self.save_settings, "accent")
         self._btn(top, "Диагностика", self.run_doctor)
         self._note(top, "страница прокручивается колесом мыши; всё сохранённое действует со следующей партии")
+        sections = self._toolbar(parent, pady=(0, 8))
+        self._btn(sections, "📂 Выбрать архив", self.choose_archive, "accent")
+        self._note(sections, "разделы, которых нет во вкладках:")
+        for key, title in PAGES:
+            if key in HIDDEN_PAGES:
+                self._btn(sections, title, lambda k=key: self._show_page(k))
 
         warn = self._card(parent)
         tk.Label(warn, bg=T.CARD, fg=T.WARN, font=("Segoe UI Semibold", 11), wraplength=1240, justify="left",
@@ -828,7 +856,7 @@ class OrganizerApp(tk.Tk):
         self._build_models_card(parent)
 
         block = self._card(parent, "🤖 Модель и контекст")
-        self._entry_field(parent=block, label="Адрес Ollama (свой ПК или другой в сети)",
+        self._entry_field(parent=block, label="Адрес локальной модели Ollama (нужен только при включённой модели)",
                           variable=self.svars["base_url"],
                           note="по умолчанию http://127.0.0.1:11434. Нет видеокарты здесь — "
                                "впишите http://адрес-компьютера-с-картой:11434, и модель будет "
@@ -882,7 +910,7 @@ class OrganizerApp(tk.Tk):
                        bg=T.CARD, fg=T.INK, activebackground=T.CARD, selectcolor=T.CARD_SOFT,
                        anchor="w", font=("Segoe UI", 10),
                        variable=self.svars["rules_first"]).pack(fill="x", pady=(4, 1))
-        self._entry_field(block, "Модель эмбеддингов Ollama (поиск папок по смыслу; пусто = выкл)",
+        self._entry_field(block, "Модель эмбеддингов Ollama (поиск папок по смыслу; пусто = выкл; нужна только при включённой модели)",
                           self.svars["embed_model"],
                           "лучше всего bge-m3 (мультиязычная, сильна на русском): `ollama pull bge-m3`; "
                           "векторы папок кэшируются рядом с программой")
@@ -991,7 +1019,7 @@ class OrganizerApp(tk.Tk):
                                            self.config["llm"]["model_vision"]}))
 
     def _build_models_card(self, parent) -> None:
-        card = self._card(parent, "🧠 Модели Ollama")
+        card = self._card(parent, "🧠 Локальная модель (Ollama) — необязательно")
         self.models_status = tk.Label(card, text="Проверяю Ollama…", bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10),
                                       justify="left", anchor="w", wraplength=900)
         self.models_status.pack(anchor="w", fill="x")
@@ -1015,7 +1043,7 @@ class OrganizerApp(tk.Tk):
         buttons = T.Flow(card, bg=T.CARD)
         buttons.pack(fill="x", pady=(4, 0))
         for label, command, style in (
-                ("🔄 Проверить Ollama", self.fetch_model_names_async, "ghost"),
+                ("🔄 Проверить локальную модель", self.fetch_model_names_async, "ghost"),
                 ("Взять как текстовую", lambda: self._use_selected_model("model"), "ghost"),
                 ("Взять для зрения", lambda: self._use_selected_model("vision_model"), "ghost"),
                 ("✨ Подобрать лучшие", self.auto_pick_models, "good"),
@@ -1031,7 +1059,7 @@ class OrganizerApp(tk.Tk):
         self.models_tree.delete(*self.models_tree.get_children())
         if not info.get("alive"):
             self.models_status.configure(
-                fg=T.BAD, text="Ollama не отвечает. Запустите приложение Ollama (или проверьте адрес выше) "
+                fg=T.BAD, text="Локальная модель не отвечает. Запустите Ollama (или проверьте адрес выше). Если модель не нужна, выключите её кнопкой в шапке. "
                                "и нажмите «Проверить Ollama».")
             return
         from core.llm import same_model
@@ -1071,7 +1099,7 @@ class OrganizerApp(tk.Tk):
     def auto_pick_models(self) -> None:
         info = getattr(self, "_model_info", None) or {}
         if not info.get("alive") or not info.get("rows"):
-            messagebox.showinfo("Модели", "Ollama не отвечает или в ней нет моделей. Скачайте модель кнопкой "
+            messagebox.showinfo("Модели", "Локальная модель не отвечает или в ней нет моделей. Скачайте модель кнопкой "
                                           "«Скачать модель…».", parent=self)
             return
         text, vision = info.get("best_text"), info.get("best_vision")
@@ -1147,7 +1175,7 @@ class OrganizerApp(tk.Tk):
         self.run_worker(f"Скачивание {tag}", work)
 
     def fetch_model_names_async(self) -> None:
-        """Список моделей Ollama приезжает фоном — окно не виснет при незапущенной Ollama."""
+        """Список моделей приезжает фоном — окно не виснет при незапущенной Ollama."""
         def work() -> None:
             try:
                 info = self._collect_model_info()
@@ -1287,6 +1315,7 @@ class OrganizerApp(tk.Tk):
         self.load_plugins()
         self.load_prompt_editor()
         self.load_trash(silent=True)
+        self.load_archives(silent=True)
         self.check_ollama()
         if hasattr(self, "mode"):
             mode = str(self.config["queue"].get("mode", "завалы"))
@@ -1581,6 +1610,125 @@ class OrganizerApp(tk.Tk):
     def selected_rows(self) -> list[dict]:
         return [self.filtered[int(iid)] for iid in self.tree.selection()
                 if iid.isdigit() and int(iid) < len(self.filtered)]
+
+    # ----------------------------------------------------------------- архивы
+    def _build_archives(self, parent) -> None:
+        intro = self._card(parent)
+        tk.Label(intro, bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 11), wraplength=1180, justify="left",
+                 anchor="w", text=(
+                     "📦 Архивы из снимка. Программа ничего не распаковывает сама: отметьте нужные и нажмите "
+                     "«Распаковать». Распакованный архив уходит в корзину отдела, не удаляется. Если распаковка "
+                     "не удалась, архив остаётся на месте, а причина видна в колонке «Статус»."
+                 )).pack(anchor="w")
+        bar = self._toolbar(parent)
+        self._btn(bar, "🔄 Обновить список", self.load_archives, "accent")
+        self._btn(bar, "☑ Отметить", lambda: self.arch_mark(True), "good")
+        self._btn(bar, "☐ Снять", lambda: self.arch_mark(False))
+        self._btn(bar, "☑ Выделить все", self.arch_select_all, "quiet")
+        self._btn(bar, "📦 Распаковать отмеченные", self.arch_unpack, "accent")
+        columns = ("mark", "path", "size", "status")
+        heads = {"mark": "✓", "path": "Архив (путь)", "size": "Размер", "status": "Статус"}
+        widths = {"mark": 40, "path": 480, "size": 100, "status": 480}
+        _card, self.arch_tree = self._table(parent, columns, heads, widths, {"path", "status"},
+                                            height=8, pady=(0, 8))
+        self.arch_tree.bind("<Double-1>", self._arch_double)
+        uinput.attach_tree(self.arch_tree, on_select_all=self.arch_select_all)
+        self.arch_rows: list[dict] = []
+
+    def load_archives(self, silent: bool = False) -> None:
+        try:
+            rows = unpack.archive_rows(self.config)
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("Архивы", str(exc))
+            return
+        marked = {row["Путь"] for row in self.arch_rows if row.get("Отметить") == "TRUE"}
+        status = unpack.load_status(self.config)
+        for row in rows:
+            row["Отметить"] = "TRUE" if row["Путь"] in marked else "FALSE"
+            found = status.get(row["Путь"])
+            row["Статус"] = (f"{found['Статус']}: {found['Комментарий']}" if found
+                             else "ещё не распаковывали")
+        self.arch_rows = rows
+        self.render_archives()
+        if not silent:
+            self.append_log(f"архивов в снимке: {len(rows)}", "note")
+
+    def render_archives(self) -> None:
+        selected = self.arch_tree.selection()
+        self.arch_tree.delete(*self.arch_tree.get_children())
+        for index, row in enumerate(self.arch_rows):
+            self.arch_tree.insert("", "end", iid=str(index), values=(
+                "☑" if row.get("Отметить") == "TRUE" else "☐",
+                row["Путь"], fmt_size(row["Размер"]), row["Статус"]))
+        self.arch_tree.selection_set([iid for iid in selected if iid.isdigit() and int(iid) < len(self.arch_rows)])
+        marked = sum(1 for row in self.arch_rows if row.get("Отметить") == "TRUE")
+        if getattr(self, "_current_page", "") == "archives":
+            self.status_var.set(f"архивов: {len(self.arch_rows)}, отмечено: {marked}")
+
+    def arch_mark(self, value: bool) -> None:
+        for iid in self.arch_tree.selection():
+            if iid.isdigit():
+                self.arch_rows[int(iid)]["Отметить"] = "TRUE" if value else "FALSE"
+        self.render_archives()
+
+    def _arch_double(self, event) -> str:
+        iid = self.arch_tree.identify_row(event.y)
+        if iid and iid.isdigit():
+            row = self.arch_rows[int(iid)]
+            row["Отметить"] = "FALSE" if row.get("Отметить") == "TRUE" else "TRUE"
+            self.render_archives()
+            self.arch_tree.selection_set(iid)
+        return "break"
+
+    def arch_select_all(self) -> None:
+        self.arch_tree.selection_set(self.arch_tree.get_children())
+
+    def arch_unpack(self) -> None:
+        rels = [row["Путь"] for row in self.arch_rows if row.get("Отметить") == "TRUE"]
+        if not rels:
+            messagebox.showinfo("Архивы", "Отметьте архивы: пробел, двойной щелчок или кнопка «Отметить».")
+            return
+        self.run_worker("Распаковка", lambda: unpack.unpack(
+            self.config, rels, progress=lambda i, n, rel: self.events.put(("progress", i, n, "Распаковка"))))
+
+    def choose_archive(self) -> None:
+        """Любая папка становится архивом: для неё создаётся свой config.json и служебная папка, открывается отдельным окном."""
+        folder = filedialog.askdirectory(title="Папка архива", initialdir=str(self.config["scan_root"]), parent=self)
+        if not folder:
+            return
+        scan_root = Path(folder).resolve()
+        slug = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "_", scan_root.name).strip("_") or "archive"
+        cfg_dir = Path(self.config["app_dir"]) / f"_output_{slug}"
+        cfg_file = cfg_dir / "config.json"
+        if not cfg_file.exists():
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            archive = dict(self.config)   # настройки те же, меняются только папки архива
+            archive.update({"scan_root": scan_root, "mo_root": scan_root,
+                            "output_dir": str(cfg_dir), "config_path": cfg_file})
+            save_config(archive)
+        app_dir = Path(self.config["app_dir"])
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--config", str(cfg_file)]
+        else:
+            python = Path(sys.executable)
+            windowed = python.with_name("pythonw.exe")   # без консольного окна
+            cmd = [str(windowed if windowed.exists() else python), str(app_dir / "app.py"), "--config", str(cfg_file)]
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: новое окно живёт отдельно от текущего
+        subprocess.Popen(cmd, cwd=str(app_dir), creationflags=0x00000008 | 0x00000200)
+        self.status_var.set(f"Открыт архив в новом окне: {scan_root}")
+
+    def trash_selected_map_rows(self) -> None:
+        """Выделенные строки карты — в корзину отдела. Файлы только перемещаются, строки уходят из карты."""
+        rows = [row for row in self.selected_rows() if row.get("Статус") != "перенесено"]
+        if not rows:
+            messagebox.showinfo("В корзину", "Выделите строки в карте: клик, а для нескольких — Shift или Ctrl.")
+            return
+        self.save_map(silent=True)   # карта на диске должна быть свежей до переноса: перенос сам уберёт из неё строки
+        marked = [{"Путь": str(row.get("Текущий путь", "")), "Отметить": "TRUE",
+                   "Причина": str(row.get("Причина", ""))} for row in rows]
+        self.run_worker("В корзину", lambda: cleanup.move_to_trash(
+            self.config, marked, progress=lambda i, n, rel: self.events.put(("progress", i, n, "Корзина"))))
 
     def set_apply(self, value: bool) -> None:
         rows = self.selected_rows()
@@ -2181,6 +2329,8 @@ class OrganizerApp(tk.Tk):
             try:
                 records = mapio.load_records(self.config["output_path"] / SUGGESTIONS_NAME)
                 self.trash_rows = cleanup.candidates(self.config) + cleanup.mark_from_model(records)
+                known = {row["Путь"] for row in self.trash_rows}
+                self.trash_rows += [row for row in cleanup.from_map(self.config) if row["Путь"] not in known]
             except Exception as exc:
                 if not silent:
                     messagebox.showerror("Корзина", str(exc))
@@ -2248,14 +2398,6 @@ class OrganizerApp(tk.Tk):
         marked = [row for row in self.trash_rows if (row.get("Отметить") or "").upper() == "TRUE"]
         if not marked:
             messagebox.showinfo("Корзина", "Отметьте строки пробелом или двойным щелчком.")
-            return
-        target = cleanup.trash_dir(self.config)
-        if not messagebox.askyesno(
-            "Перенести в корзину",
-            f"ФАЙЛЫ НЕ УДАЛЯЮТСЯ.\n\n{len(marked)} файл(ов) будут ПЕРЕМЕЩЕНЫ в:\n{target}\n\n"
-            "Оттуда вы удалите их вручную, когда проверите. Действие пишется в журнал и откатывается."):
-            return
-        if simpledialog.askstring("Подтверждение", "Введите УБРАТЬ:", parent=self) != "УБРАТЬ":
             return
         self.run_worker("Перенос в корзину", lambda: cleanup.move_to_trash(
             self.config, marked, progress=lambda i, n, rel: self.events.put(("progress", i, n, "Корзина"))))
@@ -2485,8 +2627,25 @@ class OrganizerApp(tk.Tk):
             cli.say = original
         self._text_window("Диагностика", "\n".join(lines) + f"\n\nкод возврата: {code}", size="900x560")
 
+    def _ollama_enabled(self) -> bool:
+        return bool(self.config.get("llm", {}).get("enabled", True))
+
+    def toggle_ollama(self) -> None:
+        """Выключатель локальной модели: выключенная Ollama не запускается и не нагружает ПК."""
+        self.config["llm"]["enabled"] = not self._ollama_enabled()
+        save_config(self.config)
+        self.check_ollama()
+
     def check_ollama(self) -> None:
         """Статус Ollama в шапке: жива ли, есть ли выбранная модель, чем её заменят."""
+        if not self._ollama_enabled():
+            self.ollama_label.config(text="Ollama выключена: не используется, ресурсы ПК не тратятся", fg=T.MUTED)
+            if hasattr(self, "ollama_toggle"):
+                self.ollama_toggle.configure_text("Ollama: включить")
+            return
+        if hasattr(self, "ollama_toggle"):
+            self.ollama_toggle.configure_text("Ollama: выключить")
+
         def worker() -> None:
             try:
                 info = self._collect_model_info()

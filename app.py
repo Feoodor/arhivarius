@@ -273,21 +273,105 @@ def cmd_suggest(config: dict, args) -> int:
 
 
 # ---------------------------------------------------------------------- merge
-def cmd_merge(config: dict) -> int:
-    hr("Перенос предложений в карту")
-    records = mapio.load_records(config["output_path"] / SUGGESTIONS_NAME)
+def _load_suggestion_file(config: dict, src: str | None) -> tuple[Path, list]:
+    path = Path(src).resolve() if src else config["output_path"] / SUGGESTIONS_NAME
+    return path, mapio.load_records(path)
+
+
+def cmd_check(config: dict, src: str | None = None) -> int:
+    from core.suggest_check import validate
+
+    hr("Проверка предложений")
+    path, records = _load_suggestion_file(config, src)
     if not records:
-        say("  предложений нет — сначала suggest")
+        say(f"  пусто или не читается: {path}")
         return 1
+    snapshot = scanner.load_snapshot(config)
+    errors, warnings = validate(records, snapshot, config)
+    say(f"  файл: {path}")
+    say(f"  записей: {len(records)}, ошибок: {len(errors)}, предупреждений: {len(warnings)}")
+    for line in errors:
+        say(f"  ОШИБКА: {line}")
+    for line in warnings:
+        say(f"  предупреждение: {line}")
+    if errors:
+        say("  слияние заблокировано: исправьте ошибки в файле и повторите check")
+        return 1
+    say("  файл можно сливать: merge --file ... --manual")
+    return 0
+
+
+def cmd_merge(config: dict, src: str | None = None, manual: bool = False, source: str = "") -> int:
+    from core.suggest_check import validate
+
+    hr("Перенос предложений в карту")
+    path, records = _load_suggestion_file(config, src)
+    if not records:
+        say(f"  предложений нет: {path} — сначала suggest или запишите файл по SUGGESTIONS_FORMAT.md")
+        return 1
+    if src is not None or manual:
+        errors, warnings = validate(records, scanner.load_snapshot(config), config)
+        if errors:
+            for line in errors:
+                say(f"  ОШИБКА: {line}")
+            say("  слияние остановлено: сначала check, затем исправить файл")
+            return 1
+        for line in warnings:
+            say(f"  предупреждение: {line}")
     rows = mapio.load_map(config["output_path"] / MAP_NAME)
+    who = source or (f"внешний разбор: {path.name}" if src else "Ollama")
     rows, added, updated, skipped = mapio.merge_suggestions(
-        rows, records, overwrite=False, manual=mapio.load_manual(config["output_path"]))
+        rows, records, overwrite=False, manual=mapio.load_manual(config["output_path"]),
+        auto_apply=not manual, source=who)
     mapio.save_map(config["output_path"] / MAP_NAME, rows)
     stats = mapio.stats(rows)
     say(f"  добавлено {added}, обновлено {updated}, пропущено (ваши правки) {skipped}")
+    if manual:
+        say("  режим --manual: ни одна строка не отмечена «Применить»; отметьте нужные в карте сами")
     say(f"  карта: строк {stats['всего']} | готово {stats['готово']} | проверка {stats['проверка']} | "
         f"отмечено {stats['отмечено']}")
     say(f"  файл: {config['output_path'] / MAP_NAME}")
+    return 0
+
+
+def cmd_folders(config: dict) -> int:
+    """Список существующих папок с числом файлов: его читает модель, чтобы не выдумывать пути."""
+    hr("Папки отдела (для разбора)")
+    snapshot = scanner.load_snapshot(config)
+    if not snapshot:
+        raise SystemExit("нет снимка диска — сначала выполните scan")
+    hidden = [str(p).replace("\\", "/").strip("/").casefold() for p in config["folders"].get("hide_prefixes", [])]
+    counts: dict[str, int] = {}
+    for item in snapshot.get("files", []):
+        rel = str(item.get("path", "")).replace("\\", "/")
+        parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        counts[parent] = counts.get(parent, 0) + 1
+    lines = ["# Существующие папки. Путь — от корня скана, без завершающего слэша.",
+             "# Новая папка допустима только с статусом «проверка».", ""]
+    for folder in sorted(set(snapshot.get("folders", [])) | {""}):
+        mark = " (скрыта: не разбирать)" if any(
+            folder.casefold() == pref or folder.casefold().startswith(pref + "/") for pref in hidden) else ""
+        label = folder or "(корень скана)"
+        lines.append(f"{label}\t{counts.get(folder, 0)} файл(ов){mark}")
+    out = config["output_path"] / "FOLDERS_NOW.txt"
+    out.write_text("\n".join(lines) + "\n", "utf-8")
+    say(f"  папок: {len(lines) - 3}, файл: {out}")
+    return 0
+
+
+def cmd_tree(config: dict) -> int:
+    from core import tree_report
+
+    hr("Структура папок (код, без модели)")
+    snapshot = scanner.load_snapshot(config)
+    if not snapshot:
+        raise SystemExit("нет снимка диска — сначала выполните scan")
+    lines, summary = tree_report.build_lines(snapshot, config["folders"].get("hide_prefixes", []))
+    out = config["output_path"] / "STRUCTURE_TREE.txt"
+    out.write_text("\n".join(lines) + "\n", "utf-8")
+    say(f"  папок {summary['папок']}, файлов {summary['файлов']}, размер {summary['размер_МБ']} МБ, "
+        f"пустых папок {summary['пустых_папок']}")
+    say(f"  отчёт: {out}")
     return 0
 
 
@@ -550,7 +634,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="проверка окружения и бюджетов контекста")
     sub.add_parser("scan", help="снимок диска")
     sub.add_parser("duplicates", help="отчёт о дубликатах по содержимому")
-    sub.add_parser("merge", help="предложения -> карта переноса")
+    mg = sub.add_parser("merge", help="предложения из файла -> карта (после проверки check)")
+    mg.add_argument("--file", default=None, help="файл предложений; по умолчанию suggestions.json рядом с картой")
+    mg.add_argument("--manual", action="store_true",
+                    help="не отмечать «Применить» автоматически: переносит только тот, кто отметил строку")
+    mg.add_argument("--source", default="", help="кто предложил (пишется в колонку «Кто предложил»)")
+    sub.add_parser("tree", help="структура папок из снимка -> STRUCTURE_TREE.txt (код, без модели)")
+    ck = sub.add_parser("check", help="проверить файл предложений до слияния (ничего не меняет)")
+    ck.add_argument("--file", default=None, help="файл предложений; по умолчанию suggestions.json")
+    sub.add_parser("folders", help="список существующих папок с числом файлов -> FOLDERS_NOW.txt")
     sub.add_parser("dry-run", help="что будет сделано, без изменений")
     sub.add_parser("models", help="список моделей Ollama")
     sub.add_parser("plugins", help="состояние дополнительных возможностей")
@@ -607,18 +699,20 @@ COMMANDS = {
     "scan": cmd_scan,
     "duplicates": cmd_duplicates,
     "models": cmd_models,
-    "merge": cmd_merge,
     "dry-run": cmd_dry_run,
 }
 
 
-def ensure_single_instance() -> bool:
-    """Два окна двигают одни и те же файлы и пишут одну карту — второй запуск блокируем."""
+def ensure_single_instance(cfg_file: Path) -> bool:
+    """Два окна одного архива двигают одни и те же файлы и пишут одну карту — второй запуск блокируем.
+    Блокировка на каждый конфиг отдельно: разные архивы можно открыть в разных окнах."""
     if sys.platform != "win32":
         return True
     try:
         import ctypes
-        handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ArhivariusMO")
+        import hashlib
+        key = hashlib.md5(str(cfg_file).casefold().encode("utf-8")).hexdigest()[:16]
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\ArhivariusMO_{key}")
         if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
             return False
         globals()["_SINGLE_INSTANCE_MUTEX"] = handle       # держим до выхода процесса
@@ -638,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         say(f"не загружен {args.config}: {type(exc).__name__}: {exc}")
         say("почините файл настроек или переименуйте его — создастся новый по умолчанию")
         return 2
-    if command in ("gui", "apply", "undo") and not ensure_single_instance():
+    if command in ("gui", "apply", "undo") and not ensure_single_instance(cfg_file):
         msg = ("Архивариус уже запущен. Два экземпляра могут перемещать одни и те же файлы — "
                "закройте первый и повторите.")
         say(msg)
@@ -650,6 +744,14 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         return 1
     try:
+        if command == "merge":
+            return cmd_merge(config, args.file, bool(args.manual), args.source)
+        if command == "tree":
+            return cmd_tree(config)
+        if command == "check":
+            return cmd_check(config, args.file)
+        if command == "folders":
+            return cmd_folders(config)
         if command in COMMANDS:
             return COMMANDS[command](config)
         if command == "context":
