@@ -131,12 +131,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--files", type=int, default=10, help="сколько файлов взять (по умолчанию 10)")
     parser.add_argument("--folder", default="", help="брать файлы только из этой папки архива")
     parser.add_argument("--out", default=str(APP / REPORT_NAME))
+    parser.add_argument("--config", default=str(APP / "config.json"), help="путь к config.json (по умолчанию основной)")
     args = parser.parse_args(argv)
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     if not models:
         parser.error("укажите хотя бы одну модель")
 
-    config = load_config(APP)
+    cfg_file = Path(args.config).resolve()
+    config = load_config(cfg_file.parent, config_name=cfg_file.name)
     snapshot_path = config["output_path"] / "snapshot.json"
     if not snapshot_path.exists():
         print("Нет снимка архива. Откройте программу и выполните сканирование (вкладка «Сканирование»).")

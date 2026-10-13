@@ -194,9 +194,11 @@ class OrganizerApp(tk.Tk):
         self.dot = tk.Canvas(status_row, width=16, height=16, bg=T.BG_TOP, highlightthickness=0)
         self.dot.pack(side="left", padx=(0, 5))
         self.set_dot("#9aa4b2")
-        self.ollama_label = tk.Label(status_row, text="Ollama: проверка…", bg=T.BG_TOP, fg=T.MUTED,
+        self.ollama_label = tk.Label(status_row, text="Локальная модель: проверка…", bg=T.BG_TOP, fg=T.MUTED,
                                      font=("Segoe UI", 11), anchor="e", justify="right")
         self.ollama_label.pack(side="left")
+        self.ollama_toggle = T.Pill(right, "Ollama: выключить", command=self.toggle_ollama, style="ghost", icon="⏻")
+        self.ollama_toggle.pack(anchor="e", pady=(4, 0))
         T.Pill(right, "Открыть результаты", command=lambda: open_path(self.config["output_path"]),
                style="ghost", icon="📂").pack(anchor="e", pady=(6, 0))
         title = tk.Frame(header, bg=T.BG_TOP)
@@ -828,7 +830,7 @@ class OrganizerApp(tk.Tk):
         self._build_models_card(parent)
 
         block = self._card(parent, "🤖 Модель и контекст")
-        self._entry_field(parent=block, label="Адрес Ollama (свой ПК или другой в сети)",
+        self._entry_field(parent=block, label="Адрес локальной модели Ollama (нужен только при включённой модели)",
                           variable=self.svars["base_url"],
                           note="по умолчанию http://127.0.0.1:11434. Нет видеокарты здесь — "
                                "впишите http://адрес-компьютера-с-картой:11434, и модель будет "
@@ -882,7 +884,7 @@ class OrganizerApp(tk.Tk):
                        bg=T.CARD, fg=T.INK, activebackground=T.CARD, selectcolor=T.CARD_SOFT,
                        anchor="w", font=("Segoe UI", 10),
                        variable=self.svars["rules_first"]).pack(fill="x", pady=(4, 1))
-        self._entry_field(block, "Модель эмбеддингов Ollama (поиск папок по смыслу; пусто = выкл)",
+        self._entry_field(block, "Модель эмбеддингов Ollama (поиск папок по смыслу; пусто = выкл; нужна только при включённой модели)",
                           self.svars["embed_model"],
                           "лучше всего bge-m3 (мультиязычная, сильна на русском): `ollama pull bge-m3`; "
                           "векторы папок кэшируются рядом с программой")
@@ -991,7 +993,7 @@ class OrganizerApp(tk.Tk):
                                            self.config["llm"]["model_vision"]}))
 
     def _build_models_card(self, parent) -> None:
-        card = self._card(parent, "🧠 Модели Ollama")
+        card = self._card(parent, "🧠 Локальная модель (Ollama) — необязательно")
         self.models_status = tk.Label(card, text="Проверяю Ollama…", bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 10),
                                       justify="left", anchor="w", wraplength=900)
         self.models_status.pack(anchor="w", fill="x")
@@ -1015,7 +1017,7 @@ class OrganizerApp(tk.Tk):
         buttons = T.Flow(card, bg=T.CARD)
         buttons.pack(fill="x", pady=(4, 0))
         for label, command, style in (
-                ("🔄 Проверить Ollama", self.fetch_model_names_async, "ghost"),
+                ("🔄 Проверить локальную модель", self.fetch_model_names_async, "ghost"),
                 ("Взять как текстовую", lambda: self._use_selected_model("model"), "ghost"),
                 ("Взять для зрения", lambda: self._use_selected_model("vision_model"), "ghost"),
                 ("✨ Подобрать лучшие", self.auto_pick_models, "good"),
@@ -1031,7 +1033,7 @@ class OrganizerApp(tk.Tk):
         self.models_tree.delete(*self.models_tree.get_children())
         if not info.get("alive"):
             self.models_status.configure(
-                fg=T.BAD, text="Ollama не отвечает. Запустите приложение Ollama (или проверьте адрес выше) "
+                fg=T.BAD, text="Локальная модель не отвечает. Запустите Ollama (или проверьте адрес выше). Если модель не нужна, выключите её кнопкой в шапке. "
                                "и нажмите «Проверить Ollama».")
             return
         from core.llm import same_model
@@ -1071,7 +1073,7 @@ class OrganizerApp(tk.Tk):
     def auto_pick_models(self) -> None:
         info = getattr(self, "_model_info", None) or {}
         if not info.get("alive") or not info.get("rows"):
-            messagebox.showinfo("Модели", "Ollama не отвечает или в ней нет моделей. Скачайте модель кнопкой "
+            messagebox.showinfo("Модели", "Локальная модель не отвечает или в ней нет моделей. Скачайте модель кнопкой "
                                           "«Скачать модель…».", parent=self)
             return
         text, vision = info.get("best_text"), info.get("best_vision")
@@ -1147,7 +1149,7 @@ class OrganizerApp(tk.Tk):
         self.run_worker(f"Скачивание {tag}", work)
 
     def fetch_model_names_async(self) -> None:
-        """Список моделей Ollama приезжает фоном — окно не виснет при незапущенной Ollama."""
+        """Список моделей приезжает фоном — окно не виснет при незапущенной Ollama."""
         def work() -> None:
             try:
                 info = self._collect_model_info()
@@ -2485,8 +2487,25 @@ class OrganizerApp(tk.Tk):
             cli.say = original
         self._text_window("Диагностика", "\n".join(lines) + f"\n\nкод возврата: {code}", size="900x560")
 
+    def _ollama_enabled(self) -> bool:
+        return bool(self.config.get("llm", {}).get("enabled", True))
+
+    def toggle_ollama(self) -> None:
+        """Выключатель локальной модели: выключенная Ollama не запускается и не нагружает ПК."""
+        self.config["llm"]["enabled"] = not self._ollama_enabled()
+        save_config(self.config)
+        self.check_ollama()
+
     def check_ollama(self) -> None:
         """Статус Ollama в шапке: жива ли, есть ли выбранная модель, чем её заменят."""
+        if not self._ollama_enabled():
+            self.ollama_label.config(text="Ollama выключена: не используется, ресурсы ПК не тратятся", fg=T.MUTED)
+            if hasattr(self, "ollama_toggle"):
+                self.ollama_toggle.configure_text("Ollama: включить")
+            return
+        if hasattr(self, "ollama_toggle"):
+            self.ollama_toggle.configure_text("Ollama: выключить")
+
         def worker() -> None:
             try:
                 info = self._collect_model_info()

@@ -326,6 +326,9 @@ class Analyzer:
         """Проверка перед партией: Ollama жива, модели есть (иначе — замена), окно не больше, чем держит модель."""
         from . import models as models_mod
 
+        if not self.config.get("llm", {}).get("enabled", True):
+            raise SystemExit("Ollama выключена (llm.enabled=false). Включить: settings llm.enabled=true")
+
         url, alive = probe_endpoint(self.client.base_url)
         if not alive:
             raise OllamaUnavailable(
