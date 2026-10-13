@@ -1599,14 +1599,6 @@ class OrganizerApp(tk.Tk):
         if not rows:
             messagebox.showinfo("В корзину", "Выделите строки в карте: клик, а для нескольких — Shift или Ctrl.")
             return
-        target = cleanup.trash_dir(self.config)
-        if not messagebox.askyesno(
-            "В корзину",
-            f"ФАЙЛЫ НЕ УДАЛЯЮТСЯ.\n\n{len(rows)} файл(ов) будут ПЕРЕМЕЩЕНЫ в:\n{target}\n\n"
-            "Строки уйдут из карты. Удалить окончательно можно будет вручную из этой папки."):
-            return
-        if simpledialog.askstring("Подтверждение", "Введите УБРАТЬ:", parent=self) != "УБРАТЬ":
-            return
         self.save_map(silent=True)   # карта на диске должна быть свежей до переноса: перенос сам уберёт из неё строки
         marked = [{"Путь": str(row.get("Текущий путь", "")), "Отметить": "TRUE",
                    "Причина": str(row.get("Причина", ""))} for row in rows]
@@ -2281,14 +2273,6 @@ class OrganizerApp(tk.Tk):
         marked = [row for row in self.trash_rows if (row.get("Отметить") or "").upper() == "TRUE"]
         if not marked:
             messagebox.showinfo("Корзина", "Отметьте строки пробелом или двойным щелчком.")
-            return
-        target = cleanup.trash_dir(self.config)
-        if not messagebox.askyesno(
-            "Перенести в корзину",
-            f"ФАЙЛЫ НЕ УДАЛЯЮТСЯ.\n\n{len(marked)} файл(ов) будут ПЕРЕМЕЩЕНЫ в:\n{target}\n\n"
-            "Оттуда вы удалите их вручную, когда проверите. Действие пишется в журнал и откатывается."):
-            return
-        if simpledialog.askstring("Подтверждение", "Введите УБРАТЬ:", parent=self) != "УБРАТЬ":
             return
         self.run_worker("Перенос в корзину", lambda: cleanup.move_to_trash(
             self.config, marked, progress=lambda i, n, rel: self.events.put(("progress", i, n, "Корзина"))))
