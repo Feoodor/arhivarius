@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from core import applier, cleanup, mapio, plugins, scanner
+from core import applier, cleanup, mapio, plugins, scanner, unpack
 from core.config_loader import MAP_NAME, SUGGESTIONS_NAME, load_config, save_config
 from core.folders import FolderIndex
 from core.pipeline import Analyzer, Filters, build_prompt_preview
@@ -38,6 +38,7 @@ PAGES = [
     ("tree", "🌳 Структура"),
     ("prompt", "✨ Промпт"),
     ("trash", "🗑 Корзина"),
+    ("archives", "📦 Архивы"),
     ("plugins", "🧩 Плагины"),
     ("guide", "📖 Инструкция"),
     ("settings", "⚙️ Настройки"),
@@ -242,6 +243,7 @@ class OrganizerApp(tk.Tk):
         self._build_tree(self.pages["tree"].body)
         self._build_prompt(self.pages["prompt"].body)
         self._build_trash(self.pages["trash"].body)
+        self._build_archives(self.pages["archives"].body)
         self._build_plugins(self.pages["plugins"].body)
         self._build_guide(self.pages["guide"].body)
         self._build_settings(self.pages["settings"].body)
@@ -587,13 +589,14 @@ class OrganizerApp(tk.Tk):
         actions = self._toolbar(parent)
         self._btn(actions, "📑 Аудит структуры", lambda: self._open_name("structure_audit.md"), "accent")
         self._btn(actions, "📂 Папки", self.open_folders_window, "good")
+        self._btn(actions, "☑ Выбрать все папки", self.select_all_folders, "quiet")
         self._btn(actions, "📄 План папок", self.make_plan)
         self._btn(actions, "Создать папки из плана", self.create_plan, "good")
         self.plan_note = self._note(actions, "план лежит в structure_plan.txt — правьте его перед созданием")
 
         _card, self.folder_tree = self._table(parent, ("files",), {"files": "Файлов в ветке"},
                                               {"files": 120}, set(), show="tree headings",
-                                              selectmode="browse", height=8, pady=(0, 10))
+                                              selectmode="extended", height=8, pady=(0, 10))
         self.folder_tree.heading("#0", text="Папка")
         self.folder_tree.column("#0", width=420, minwidth=180, stretch=True)
         self.folder_tree.column("files", width=120, minwidth=90, anchor="e", stretch=False)
@@ -601,6 +604,16 @@ class OrganizerApp(tk.Tk):
             ("Копировать путь папки", lambda: uinput.put_on_clipboard(
                 self.folder_tree, "\n".join(self.folder_tree.selection()))),
         ])
+
+    def select_all_folders(self) -> None:
+        """Выделить все папки дерева «Структура», включая вложенные."""
+        items, stack = [], list(self.folder_tree.get_children(""))
+        while stack:
+            item = stack.pop()
+            items.append(item)
+            stack.extend(self.folder_tree.get_children(item))
+        self.folder_tree.selection_set(items)
+        self.status_var.set(f"выделено папок: {len(items)}")
 
     def _tree_open(self, value: bool) -> None:
         stack = list(self.folder_tree.get_children(""))
@@ -1302,6 +1315,7 @@ class OrganizerApp(tk.Tk):
         self.load_plugins()
         self.load_prompt_editor()
         self.load_trash(silent=True)
+        self.load_archives(silent=True)
         self.check_ollama()
         if hasattr(self, "mode"):
             mode = str(self.config["queue"].get("mode", "завалы"))
@@ -1596,6 +1610,87 @@ class OrganizerApp(tk.Tk):
     def selected_rows(self) -> list[dict]:
         return [self.filtered[int(iid)] for iid in self.tree.selection()
                 if iid.isdigit() and int(iid) < len(self.filtered)]
+
+    # ----------------------------------------------------------------- архивы
+    def _build_archives(self, parent) -> None:
+        intro = self._card(parent)
+        tk.Label(intro, bg=T.CARD, fg=T.MUTED, font=("Segoe UI", 11), wraplength=1180, justify="left",
+                 anchor="w", text=(
+                     "📦 Архивы из снимка. Программа ничего не распаковывает сама: отметьте нужные и нажмите "
+                     "«Распаковать». Распакованный архив уходит в корзину отдела, не удаляется. Если распаковка "
+                     "не удалась, архив остаётся на месте, а причина видна в колонке «Статус»."
+                 )).pack(anchor="w")
+        bar = self._toolbar(parent)
+        self._btn(bar, "🔄 Обновить список", self.load_archives, "accent")
+        self._btn(bar, "☑ Отметить", lambda: self.arch_mark(True), "good")
+        self._btn(bar, "☐ Снять", lambda: self.arch_mark(False))
+        self._btn(bar, "☑ Выделить все", self.arch_select_all, "quiet")
+        self._btn(bar, "📦 Распаковать отмеченные", self.arch_unpack, "accent")
+        columns = ("mark", "path", "size", "status")
+        heads = {"mark": "✓", "path": "Архив (путь)", "size": "Размер", "status": "Статус"}
+        widths = {"mark": 40, "path": 480, "size": 100, "status": 480}
+        _card, self.arch_tree = self._table(parent, columns, heads, widths, {"path", "status"},
+                                            height=8, pady=(0, 8))
+        self.arch_tree.bind("<Double-1>", self._arch_double)
+        uinput.attach_tree(self.arch_tree, on_select_all=self.arch_select_all)
+        self.arch_rows: list[dict] = []
+
+    def load_archives(self, silent: bool = False) -> None:
+        try:
+            rows = unpack.archive_rows(self.config)
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("Архивы", str(exc))
+            return
+        marked = {row["Путь"] for row in self.arch_rows if row.get("Отметить") == "TRUE"}
+        status = unpack.load_status(self.config)
+        for row in rows:
+            row["Отметить"] = "TRUE" if row["Путь"] in marked else "FALSE"
+            found = status.get(row["Путь"])
+            row["Статус"] = (f"{found['Статус']}: {found['Комментарий']}" if found
+                             else "ещё не распаковывали")
+        self.arch_rows = rows
+        self.render_archives()
+        if not silent:
+            self.append_log(f"архивов в снимке: {len(rows)}", "note")
+
+    def render_archives(self) -> None:
+        selected = self.arch_tree.selection()
+        self.arch_tree.delete(*self.arch_tree.get_children())
+        for index, row in enumerate(self.arch_rows):
+            self.arch_tree.insert("", "end", iid=str(index), values=(
+                "☑" if row.get("Отметить") == "TRUE" else "☐",
+                row["Путь"], fmt_size(row["Размер"]), row["Статус"]))
+        self.arch_tree.selection_set([iid for iid in selected if iid.isdigit() and int(iid) < len(self.arch_rows)])
+        marked = sum(1 for row in self.arch_rows if row.get("Отметить") == "TRUE")
+        if getattr(self, "_current_page", "") == "archives":
+            self.status_var.set(f"архивов: {len(self.arch_rows)}, отмечено: {marked}")
+
+    def arch_mark(self, value: bool) -> None:
+        for iid in self.arch_tree.selection():
+            if iid.isdigit():
+                self.arch_rows[int(iid)]["Отметить"] = "TRUE" if value else "FALSE"
+        self.render_archives()
+
+    def _arch_double(self, event) -> str:
+        iid = self.arch_tree.identify_row(event.y)
+        if iid and iid.isdigit():
+            row = self.arch_rows[int(iid)]
+            row["Отметить"] = "FALSE" if row.get("Отметить") == "TRUE" else "TRUE"
+            self.render_archives()
+            self.arch_tree.selection_set(iid)
+        return "break"
+
+    def arch_select_all(self) -> None:
+        self.arch_tree.selection_set(self.arch_tree.get_children())
+
+    def arch_unpack(self) -> None:
+        rels = [row["Путь"] for row in self.arch_rows if row.get("Отметить") == "TRUE"]
+        if not rels:
+            messagebox.showinfo("Архивы", "Отметьте архивы: пробел, двойной щелчок или кнопка «Отметить».")
+            return
+        self.run_worker("Распаковка", lambda: unpack.unpack(
+            self.config, rels, progress=lambda i, n, rel: self.events.put(("progress", i, n, "Распаковка"))))
 
     def choose_archive(self) -> None:
         """Любая папка становится архивом: для неё создаётся свой config.json и служебная папка, открывается отдельным окном."""
