@@ -40,6 +40,8 @@ PAGES = [
     ("settings", "⚙️ Настройки"),
     ("log", "📜 Журнал"),
 ]
+# Разделы без своих вкладок: открываются кнопками на странице «Настройки», сами страницы сохранены
+HIDDEN_PAGES = ("prompt", "plugins", "guide")
 
 MODES = ("🧹 Разбор завалов", "🧭 Ревизия структуры", "🔍 Вся система", "🪜 Система → потом разбор")
 MODE_KEYS = ("завалы", "ревизия структуры", "проверка системы", "система-затем-разбор")
@@ -212,7 +214,7 @@ class OrganizerApp(tk.Tk):
         title.bind("<Configure>", lambda e: tagline.configure(wraplength=max(240, e.width - 8)))
 
         from ui import i18n as I
-        self.tabbar = T.TabBar(self, [(k, I.tr(title)) for k, title in PAGES], command=self._show_page, bg=T.BG_TOP)
+        self.tabbar = T.TabBar(self, [(k, I.tr(title)) for k, title in PAGES if k not in HIDDEN_PAGES], command=self._show_page, bg=T.BG_TOP)
         self.tabbar.pack(fill="x", padx=24, pady=(4, 6))
 
         # строка состояния — до контейнера: на тесном окне именно страница уступает место, а не статус
@@ -476,14 +478,16 @@ class OrganizerApp(tk.Tk):
 
     # -------------------------------------------------------------------- карта
     def _build_map(self, parent) -> None:
+        # слева направо — порядок работы: отметить, утвердить, проверить, перенести; справа — прочее
         bar = self._toolbar(parent, pady=(0, 2))
-        self._btn(bar, "👁 Смотреть и утвердить", self.view_selected, "accent")
-        self._btn(bar, "✅ Утвердить помеченные", self.approve_marked, "good")
-        self._btn(bar, "Отметить", lambda: self.set_apply(True))
-        self._btn(bar, "Снять", lambda: self.set_apply(False))
+        self._btn(bar, "☑ Отметить", lambda: self.set_apply(True), "good")
+        self._btn(bar, "☐ Снять", lambda: self.set_apply(False))
         self._btn(bar, "☑ Выделить все", self.select_all_rows, "quiet")
+        self._btn(bar, "✅ Утвердить помеченные", self.approve_marked)
         self._btn(bar, "🧪 Пробный перенос", self.show_dry_run)
         self._btn(bar, "🚚 Применить перенос", self.apply_marked, "accent")
+        self._btn(bar, "👁 Смотреть", self.view_selected, "quiet")
+        self._btn(bar, "🗑 В корзину выделенное", self.trash_selected_map_rows, "danger")
 
         tools = tk.Frame(parent, bg=T.BG_TOP)
         tools.pack(fill="x", pady=(4, 6))
@@ -806,6 +810,11 @@ class OrganizerApp(tk.Tk):
         self._btn(top, "💾 Сохранить настройки", self.save_settings, "accent")
         self._btn(top, "Диагностика", self.run_doctor)
         self._note(top, "страница прокручивается колесом мыши; всё сохранённое действует со следующей партии")
+        sections = self._toolbar(parent, pady=(0, 8))
+        self._note(sections, "разделы, которых нет во вкладках:")
+        for key, title in PAGES:
+            if key in HIDDEN_PAGES:
+                self._btn(sections, title, lambda k=key: self._show_page(k))
 
         warn = self._card(parent)
         tk.Label(warn, bg=T.CARD, fg=T.WARN, font=("Segoe UI Semibold", 11), wraplength=1240, justify="left",
@@ -1583,6 +1592,26 @@ class OrganizerApp(tk.Tk):
     def selected_rows(self) -> list[dict]:
         return [self.filtered[int(iid)] for iid in self.tree.selection()
                 if iid.isdigit() and int(iid) < len(self.filtered)]
+
+    def trash_selected_map_rows(self) -> None:
+        """Выделенные строки карты — в корзину отдела. Файлы только перемещаются, строки уходят из карты."""
+        rows = [row for row in self.selected_rows() if row.get("Статус") != "перенесено"]
+        if not rows:
+            messagebox.showinfo("В корзину", "Выделите строки в карте: клик, а для нескольких — Shift или Ctrl.")
+            return
+        target = cleanup.trash_dir(self.config)
+        if not messagebox.askyesno(
+            "В корзину",
+            f"ФАЙЛЫ НЕ УДАЛЯЮТСЯ.\n\n{len(rows)} файл(ов) будут ПЕРЕМЕЩЕНЫ в:\n{target}\n\n"
+            "Строки уйдут из карты. Удалить окончательно можно будет вручную из этой папки."):
+            return
+        if simpledialog.askstring("Подтверждение", "Введите УБРАТЬ:", parent=self) != "УБРАТЬ":
+            return
+        self.save_map(silent=True)   # карта на диске должна быть свежей до переноса: перенос сам уберёт из неё строки
+        marked = [{"Путь": str(row.get("Текущий путь", "")), "Отметить": "TRUE",
+                   "Причина": str(row.get("Причина", ""))} for row in rows]
+        self.run_worker("В корзину", lambda: cleanup.move_to_trash(
+            self.config, marked, progress=lambda i, n, rel: self.events.put(("progress", i, n, "Корзина"))))
 
     def set_apply(self, value: bool) -> None:
         rows = self.selected_rows()
