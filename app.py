@@ -703,13 +703,16 @@ COMMANDS = {
 }
 
 
-def ensure_single_instance() -> bool:
-    """Два окна двигают одни и те же файлы и пишут одну карту — второй запуск блокируем."""
+def ensure_single_instance(cfg_file: Path) -> bool:
+    """Два окна одного архива двигают одни и те же файлы и пишут одну карту — второй запуск блокируем.
+    Блокировка на каждый конфиг отдельно: разные архивы можно открыть в разных окнах."""
     if sys.platform != "win32":
         return True
     try:
         import ctypes
-        handle = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\ArhivariusMO")
+        import hashlib
+        key = hashlib.md5(str(cfg_file).casefold().encode("utf-8")).hexdigest()[:16]
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, f"Local\\ArhivariusMO_{key}")
         if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
             return False
         globals()["_SINGLE_INSTANCE_MUTEX"] = handle       # держим до выхода процесса
@@ -729,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         say(f"не загружен {args.config}: {type(exc).__name__}: {exc}")
         say("почините файл настроек или переименуйте его — создастся новый по умолчанию")
         return 2
-    if command in ("gui", "apply", "undo") and not ensure_single_instance():
+    if command in ("gui", "apply", "undo") and not ensure_single_instance(cfg_file):
         msg = ("Архивариус уже запущен. Два экземпляра могут перемещать одни и те же файлы — "
                "закройте первый и повторите.")
         say(msg)

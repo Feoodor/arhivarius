@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import json
 import queue
+import re
+import subprocess
+import sys
 import threading
 import traceback
 import tkinter as tk
@@ -811,6 +814,7 @@ class OrganizerApp(tk.Tk):
         self._btn(top, "Диагностика", self.run_doctor)
         self._note(top, "страница прокручивается колесом мыши; всё сохранённое действует со следующей партии")
         sections = self._toolbar(parent, pady=(0, 8))
+        self._btn(sections, "📂 Выбрать архив", self.choose_archive, "accent")
         self._note(sections, "разделы, которых нет во вкладках:")
         for key, title in PAGES:
             if key in HIDDEN_PAGES:
@@ -1592,6 +1596,32 @@ class OrganizerApp(tk.Tk):
     def selected_rows(self) -> list[dict]:
         return [self.filtered[int(iid)] for iid in self.tree.selection()
                 if iid.isdigit() and int(iid) < len(self.filtered)]
+
+    def choose_archive(self) -> None:
+        """Любая папка становится архивом: для неё создаётся свой config.json и служебная папка, открывается отдельным окном."""
+        folder = filedialog.askdirectory(title="Папка архива", initialdir=str(self.config["scan_root"]), parent=self)
+        if not folder:
+            return
+        scan_root = Path(folder).resolve()
+        slug = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "_", scan_root.name).strip("_") or "archive"
+        cfg_dir = Path(self.config["app_dir"]) / f"_output_{slug}"
+        cfg_file = cfg_dir / "config.json"
+        if not cfg_file.exists():
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            archive = dict(self.config)   # настройки те же, меняются только папки архива
+            archive.update({"scan_root": scan_root, "mo_root": scan_root,
+                            "output_dir": str(cfg_dir), "config_path": cfg_file})
+            save_config(archive)
+        app_dir = Path(self.config["app_dir"])
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--config", str(cfg_file)]
+        else:
+            python = Path(sys.executable)
+            windowed = python.with_name("pythonw.exe")   # без консольного окна
+            cmd = [str(windowed if windowed.exists() else python), str(app_dir / "app.py"), "--config", str(cfg_file)]
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: новое окно живёт отдельно от текущего
+        subprocess.Popen(cmd, cwd=str(app_dir), creationflags=0x00000008 | 0x00000200)
+        self.status_var.set(f"Открыт архив в новом окне: {scan_root}")
 
     def trash_selected_map_rows(self) -> None:
         """Выделенные строки карты — в корзину отдела. Файлы только перемещаются, строки уходят из карты."""
