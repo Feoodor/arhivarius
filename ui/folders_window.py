@@ -71,12 +71,26 @@ class FoldersWindow(tk.Toplevel):
     def _card(self, title: str) -> tk.Frame:
         card = T.Card(self.scroller.body, padding=14, tone=T.CARD)
         card.pack(fill="x", pady=(0, 12))
-        tk.Label(card.inner, text=title, bg=T.CARD, fg=T.INK,
-                 font=("Segoe UI Semibold", 14)).pack(anchor="w", pady=(0, 8))
-        return card.inner
+        head = tk.Frame(card.inner, bg=T.CARD)
+        head.pack(fill="x", pady=(0, 8))
+        tk.Label(head, text=title, bg=T.CARD, fg=T.INK,
+                 font=("Segoe UI Semibold", 14)).pack(side="left")
+        inner = card.inner
+        inner._vars = []   # галочки этого раздела: кнопки «Выбрать все» / «Снять все» ставят их разом
+        T.Pill(head, "☑ Выбрать все", command=lambda: self._mark_all(inner, True),
+               style="quiet", bg=T.CARD).pack(side="right")
+        T.Pill(head, "Снять все", command=lambda: self._mark_all(inner, False),
+               style="ghost", bg=T.CARD).pack(side="right", padx=(0, 6))
+        return inner
+
+    def _mark_all(self, inner: tk.Frame, value: bool) -> None:
+        for var in inner._vars:
+            var.set(value)
 
     def _check_row(self, card, text: str, var: tk.BooleanVar, fg: str = T.INK, extra=None) -> tk.Frame:
         """Строка с галочкой: текст переносится по ширине окна, дополнительная кнопка — справа."""
+        if hasattr(card, "_vars"):
+            card._vars.append(var)
         row = tk.Frame(card, bg=T.CARD_SOFT)
         row.pack(fill="x", pady=2, padx=4)
         if extra is not None:
