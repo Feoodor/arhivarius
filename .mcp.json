@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "tilda": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://tilda.by/api/mcp/",
+        "--transport",
+        "http-only",
+        "--header",
+        "Authorization: Bearer [YOUR_TOKEN_HERE]"
+      ]
+    }
+  }
+}
